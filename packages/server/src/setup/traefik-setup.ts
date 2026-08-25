@@ -22,6 +22,24 @@ export const TRAEFIK_HTTP3_PORT =
 	Number.parseInt(process.env.TRAEFIK_HTTP3_PORT!, 10) || 443;
 export const TRAEFIK_VERSION = process.env.TRAEFIK_VERSION || "3.6.25";
 
+type AccessLogOutput = Pick<
+	NonNullable<MainTraefikConfig["accessLog"]>,
+	"bufferingSize" | "filePath"
+>;
+
+export const getDefaultAccessLogConfig = (output: AccessLogOutput = {}) => ({
+	...output,
+	format: "json",
+	fields: {
+		headers: {
+			defaultMode: "drop",
+		},
+		queryParameters: {
+			defaultMode: "drop",
+		},
+	},
+});
+
 export interface TraefikOptions {
 	env?: string[];
 	serverId?: string;
@@ -255,6 +273,7 @@ export const getDefaultTraefikConfig = () => {
 		global: {
 			sendAnonymousUsage: false,
 		},
+		accessLog: getDefaultAccessLogConfig(),
 		providers: {
 			...(process.env.NODE_ENV === "development"
 				? {
@@ -322,6 +341,7 @@ export const getDefaultTraefikConfig = () => {
 
 export const getDefaultServerTraefikConfig = () => {
 	const configObject: MainTraefikConfig = {
+		accessLog: getDefaultAccessLogConfig(),
 		providers: {
 			swarm: {
 				exposedByDefault: false,
