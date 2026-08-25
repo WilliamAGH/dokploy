@@ -22,8 +22,6 @@ export const TRAEFIK_HTTP3_PORT =
 	Number.parseInt(process.env.TRAEFIK_HTTP3_PORT!, 10) || 443;
 export const TRAEFIK_VERSION = process.env.TRAEFIK_VERSION || "3.6.25";
 
-const TRAEFIK_REQUEST_READ_TIMEOUT = "3600s";
-
 type AccessLogOutput = Pick<
 	NonNullable<MainTraefikConfig["accessLog"]>,
 	"bufferingSize" | "filePath"
@@ -303,19 +301,9 @@ export const getDefaultTraefikConfig = () => {
 		entryPoints: {
 			web: {
 				address: `:${TRAEFIK_PORT}`,
-				transport: {
-					respondingTimeouts: {
-						readTimeout: TRAEFIK_REQUEST_READ_TIMEOUT,
-					},
-				},
 			},
 			websecure: {
 				address: `:${TRAEFIK_SSL_PORT}`,
-				transport: {
-					respondingTimeouts: {
-						readTimeout: TRAEFIK_REQUEST_READ_TIMEOUT,
-					},
-				},
 				http3: {
 					advertisedPort: TRAEFIK_HTTP3_PORT,
 				},
@@ -372,19 +360,9 @@ export const getDefaultServerTraefikConfig = () => {
 		entryPoints: {
 			web: {
 				address: `:${TRAEFIK_PORT}`,
-				transport: {
-					respondingTimeouts: {
-						readTimeout: TRAEFIK_REQUEST_READ_TIMEOUT,
-					},
-				},
 			},
 			websecure: {
 				address: `:${TRAEFIK_SSL_PORT}`,
-				transport: {
-					respondingTimeouts: {
-						readTimeout: TRAEFIK_REQUEST_READ_TIMEOUT,
-					},
-				},
 				http3: {
 					advertisedPort: TRAEFIK_HTTP3_PORT,
 				},
