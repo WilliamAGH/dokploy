@@ -13,12 +13,14 @@ import {
 	cleanupVolumes,
 	DEFAULT_UPDATE_DATA,
 	findServerById,
+	getDefaultAccessLogConfig,
 	getDockerDiskUsage,
 	getDokployImageTag,
 	getLogCleanupStatus,
 	getUpdateData,
 	getWebServerSettings,
 	IS_CLOUD,
+	type MainTraefikConfig,
 	parseRawConfig,
 	paths,
 	prepareEnvironmentVariables,
@@ -846,11 +848,7 @@ export const settingsRouter = createTRPCRouter({
 		const config = readMainConfig();
 
 		if (!config) return false;
-		const parsedConfig = parse(config) as {
-			accessLog?: {
-				filePath: string;
-			};
-		};
+		const parsedConfig = parse(config) as MainTraefikConfig;
 
 		return !!parsedConfig?.accessLog?.filePath;
 	}),
@@ -867,24 +865,16 @@ export const settingsRouter = createTRPCRouter({
 			const mainConfig = readMainConfig();
 			if (!mainConfig) return false;
 
-			const currentConfig = parse(mainConfig) as {
-				accessLog?: {
-					filePath: string;
-				};
-			};
+			const currentConfig = parse(mainConfig) as MainTraefikConfig;
 
-			if (input.enable) {
-				const config = {
-					accessLog: {
-						filePath: "/etc/dokploy/traefik/dynamic/access.log",
-						format: "json",
-						bufferingSize: 100,
-					},
-				};
-				currentConfig.accessLog = config.accessLog;
-			} else {
-				currentConfig.accessLog = undefined;
-			}
+			currentConfig.accessLog = getDefaultAccessLogConfig(
+				input.enable
+					? {
+							filePath: "/etc/dokploy/traefik/dynamic/access.log",
+							bufferingSize: 100,
+						}
+					: {},
+			);
 
 			writeMainConfig(stringify(currentConfig));
 			await audit(ctx, {
