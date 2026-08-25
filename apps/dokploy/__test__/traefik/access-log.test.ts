@@ -29,6 +29,22 @@ test("default Traefik configurations write sanitized JSON access logs to stdout"
 	}
 });
 
+test("default Traefik entrypoints accept long request bodies", () => {
+	for (const getConfig of [
+		getDefaultTraefikConfig,
+		getDefaultServerTraefikConfig,
+	]) {
+		const config = parse(getConfig()) as MainTraefikConfig;
+
+		expect(
+			config.entryPoints?.web?.transport?.respondingTimeouts?.readTimeout,
+		).toBe("3600s");
+		expect(
+			config.entryPoints?.websecure?.transport?.respondingTimeouts?.readTimeout,
+		).toBe("3600s");
+	}
+});
+
 test("local request logging preserves safe fields and restores stdout logging", () => {
 	const config = parse(getDefaultTraefikConfig()) as MainTraefikConfig;
 
