@@ -11,14 +11,18 @@ import { pullImage } from "@dokploy/server/utils/docker/utils";
 import { execAsyncRemote } from "@dokploy/server/utils/process/execAsync";
 import { TRPCError } from "@trpc/server";
 import { eq, getTableColumns } from "drizzle-orm";
+import { quote } from "shell-quote";
+import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
 
 export type Mariadb = typeof mariadb.$inferSelect;
 
-export const createMariadb = async (input: typeof apiCreateMariaDB._type) => {
+export const createMariadb = async (
+	input: z.infer<typeof apiCreateMariaDB>,
+) => {
 	const appName = buildAppName("mariadb", input.appName);
 
-	const valid = await validUniqueServerAppName(input.appName);
+	const valid = await validUniqueServerAppName(appName);
 	if (!valid) {
 		throw new TRPCError({
 			code: "CONFLICT",
@@ -65,7 +69,12 @@ export const findMariadbById = async (mariadbId: string) => {
 			server: true,
 			backups: {
 				with: {
-					destination: true,
+					destination: {
+						columns: {
+							accessKey: false,
+							secretAccessKey: false,
+						},
+					},
 					deployments: true,
 				},
 			},
@@ -137,7 +146,7 @@ export const deployMariadb = async (
 		if (mariadb.serverId) {
 			await execAsyncRemote(
 				mariadb.serverId,
-				`docker pull ${mariadb.dockerImage}`,
+				`docker pull ${quote([mariadb.dockerImage])}`,
 				onData,
 			);
 		} else {

@@ -1,4 +1,5 @@
 import _ from "lodash";
+import { isMap, isScalar, isSeq, parseDocument } from "yaml";
 import type {
 	ComposeSpecification,
 	DefinitionsService,
@@ -33,11 +34,14 @@ export const addSuffixToVolumesInServices = (
 		if (_.has(newServiceConfig, "volumes")) {
 			newServiceConfig.volumes = _.map(newServiceConfig.volumes, (volume) => {
 				if (_.isString(volume)) {
-					const [volumeName, path] = volume.split(":");
+					// remainder is the container path plus optional access mode (:ro, :z, :Z)
+					const [volumeName, ...pathAndMode] = volume.split(":");
+					const remainder = pathAndMode.join(":");
 
 					// skip bind mounts and variables (e.g. $PWD)
 					if (
 						!volumeName ||
+						!remainder ||
 						volumeName.startsWith(".") ||
 						volumeName.startsWith("/") ||
 						volumeName.startsWith("$")
@@ -50,10 +54,10 @@ export const addSuffixToVolumesInServices = (
 					if (parts.length > 1) {
 						const baseName = parts[0];
 						const rest = parts.slice(1).join("/");
-						return `${baseName}-${suffix}/${rest}:${path}`;
+						return `${baseName}-${suffix}/${rest}:${remainder}`;
 					}
 
-					return `${volumeName}-${suffix}:${path}`;
+					return `${volumeName}-${suffix}:${remainder}`;
 				}
 				if (_.isObject(volume) && volume.type === "volume" && volume.source) {
 					return {
@@ -80,15 +84,17 @@ export const extractServiceVolumes = (
 
 	const result: ServiceVolume[] = [];
 
-	_.forEach(composeData.services, (serviceConfig, serviceName) => {
+	for (const [serviceName, serviceConfig] of Object.entries(
+		composeData.services,
+	)) {
 		if (!serviceConfig.volumes) {
-			return;
+			continue;
 		}
 		for (const vol of serviceConfig.volumes) {
 			if (_.isString(vol)) {
 				const parts = vol.split(":");
-				const source = parts[0] || "";
-				const target = parts[1] || "";
+				const source = parts.length === 1 ? "" : parts[0] || "";
+				const target = parts.length === 1 ? parts[0] || "" : parts[1] || "";
 				const isBind =
 					source.startsWith(".") ||
 					source.startsWith("/") ||
@@ -108,46 +114,97 @@ export const extractServiceVolumes = (
 				});
 			}
 		}
-	});
+	}
 
 	return result;
 };
 
-export const addVolumeToService = (
-	composeData: ComposeSpecification,
-	serviceName: string,
-	volume: string,
-): ComposeSpecification => {
-	const updated = _.cloneDeep(composeData);
-	if (!updated.services?.[serviceName]) {
-		return updated;
+const parseComposeDocument = (composeFile: string) => {
+	const document = parseDocument(composeFile);
+	if (document.errors.length > 0) {
+		throw document.errors[0];
 	}
-	if (!updated.services[serviceName].volumes) {
-		updated.services[serviceName].volumes = [];
-	}
-	updated.services[serviceName].volumes.push(volume);
-	return updated;
+	return document;
 };
 
-export const removeVolumeFromService = (
-	composeData: ComposeSpecification,
+const getServiceVolumes = (composeFile: string, serviceName: string) => {
+	const document = parseComposeDocument(composeFile);
+	const service = document.getIn(["services", serviceName], true);
+	if (!isMap(service)) {
+		throw new Error("Compose service not found");
+	}
+
+	let volumes = service.get("volumes", true);
+	if (volumes === undefined) {
+		service.set("volumes", []);
+		volumes = service.get("volumes", true);
+	}
+	if (!isSeq(volumes)) {
+		throw new Error("Compose service volumes must be a sequence");
+	}
+	return { document, volumes };
+};
+
+const getVolumeTarget = (volume: unknown) => {
+	if (isScalar(volume)) {
+		const parts = String(volume.value).split(":");
+		return parts.length === 1 ? parts[0] : parts[1];
+	}
+	if (isMap(volume)) {
+		const target = volume.get("target");
+		return typeof target === "string" ? target : undefined;
+	}
+	return undefined;
+};
+
+export const addVolumeToComposeFile = (
+	composeFile: string,
+	serviceName: string,
+	volume: string,
+) => {
+	const { document, volumes } = getServiceVolumes(composeFile, serviceName);
+	volumes.add(volume);
+	return document.toString();
+};
+
+export const removeVolumeFromComposeFile = (
+	composeFile: string,
 	serviceName: string,
 	target: string,
-): ComposeSpecification => {
-	const updated = _.cloneDeep(composeData);
-	if (!updated.services?.[serviceName]?.volumes) {
-		return updated;
+) => {
+	const { document, volumes } = getServiceVolumes(composeFile, serviceName);
+	const index = volumes.items.findIndex(
+		(volume) => getVolumeTarget(volume) === target,
+	);
+	if (index < 0) {
+		throw new Error("Compose volume not found");
 	}
-	updated.services[serviceName].volumes = updated.services[
-		serviceName
-	].volumes.filter((vol) => {
-		if (_.isString(vol)) {
-			const parts = vol.split(":");
-			return parts[1] !== target;
-		}
-		return vol.target !== target;
-	});
-	return updated;
+	volumes.delete(index);
+	return document.toString();
+};
+
+export const updateVolumeInComposeFile = (
+	composeFile: string,
+	serviceName: string,
+	originalTarget: string,
+	source: string,
+	target: string,
+) => {
+	const { document, volumes } = getServiceVolumes(composeFile, serviceName);
+	const volume = volumes.items.find(
+		(item) => getVolumeTarget(item) === originalTarget,
+	);
+	if (isScalar(volume)) {
+		const parts = String(volume.value).split(":");
+		const options = parts.length === 1 ? [] : parts.slice(2);
+		volume.value = [source, target, ...options].filter(Boolean).join(":");
+	} else if (isMap(volume)) {
+		volume.set("source", source);
+		volume.set("target", target);
+	} else {
+		throw new Error("Compose volume not found");
+	}
+	return document.toString();
 };
 
 export const addSuffixToAllVolumes = (

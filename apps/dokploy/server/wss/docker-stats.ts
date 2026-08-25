@@ -4,10 +4,12 @@ import {
 	execAsync,
 	getHostSystemStats,
 	getLastAdvancedStatsFile,
+	IS_CLOUD,
 	recordAdvancedStats,
 	validateRequest,
 } from "@dokploy/server";
 import { WebSocketServer } from "ws";
+import { canAccessDockerOverWss } from "./authorize";
 
 export const setupDockerStatsMonitoringSocketServer = (
 	server: http.Server<typeof http.IncomingMessage, typeof http.ServerResponse>,
@@ -32,11 +34,18 @@ export const setupDockerStatsMonitoringSocketServer = (
 
 	wssTerm.on("connection", async (ws, req) => {
 		const url = new URL(req.url || "", `http://${req.headers.host}`);
+
+		if (IS_CLOUD) {
+			ws.send("This feature is not available in the cloud version.");
+			ws.close();
+			return;
+		}
 		const appName = url.searchParams.get("appName");
 		const appType = (url.searchParams.get("appType") || "application") as
 			| "application"
 			| "stack"
 			| "docker-compose";
+		const serviceId = url.searchParams.get("serviceId");
 		const { user, session } = await validateRequest(req);
 
 		if (!appName) {
@@ -46,6 +55,11 @@ export const setupDockerStatsMonitoringSocketServer = (
 
 		if (!user || !session) {
 			ws.close();
+			return;
+		}
+
+		if (!(await canAccessDockerOverWss(user, session, null, serviceId))) {
+			ws.close(4003, "Not authorized");
 			return;
 		}
 		const intervalId = setInterval(async () => {

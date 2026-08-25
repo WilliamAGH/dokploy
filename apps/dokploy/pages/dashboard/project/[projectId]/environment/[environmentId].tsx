@@ -12,6 +12,7 @@ import {
 	Loader2,
 	Play,
 	PlusIcon,
+	RefreshCw,
 	Search,
 	ServerIcon,
 	SquareTerminal,
@@ -23,7 +24,7 @@ import type {
 	InferGetServerSidePropsType,
 } from "next";
 import Head from "next/head";
-import { useRouter } from "next/router";
+import Link from "next/link";
 import { type ReactElement, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import superjson from "superjson";
@@ -31,12 +32,14 @@ import { AddAiAssistant } from "@/components/dashboard/project/add-ai-assistant"
 import { AddApplication } from "@/components/dashboard/project/add-application";
 import { AddCompose } from "@/components/dashboard/project/add-compose";
 import { AddDatabase } from "@/components/dashboard/project/add-database";
+import { AddImport } from "@/components/dashboard/project/add-import";
 import { AddTemplate } from "@/components/dashboard/project/add-template";
 import { AdvancedEnvironmentSelector } from "@/components/dashboard/project/advanced-environment-selector";
 import { DuplicateProject } from "@/components/dashboard/project/duplicate-project";
 import { EnvironmentVariables } from "@/components/dashboard/project/environment-variables";
 import { ProjectEnvironment } from "@/components/dashboard/projects/project-environment";
 import {
+	LibsqlIcon,
 	MariadbIcon,
 	MongodbIcon,
 	MysqlIcon,
@@ -44,8 +47,8 @@ import {
 	RedisIcon,
 } from "@/components/icons/data-tools-icons";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
+import { AdvanceBreadcrumb } from "@/components/shared/advance-breadcrumb";
 import { AlertBlock } from "@/components/shared/alert-block";
-import { BreadcrumbSidebar } from "@/components/shared/breadcrumb-sidebar";
 import { DateTooltip } from "@/components/shared/date-tooltip";
 import { DialogAction } from "@/components/shared/dialog-action";
 import { FocusShortcutInput } from "@/components/shared/focus-shortcut-input";
@@ -67,6 +70,14 @@ import {
 	CommandInput,
 	CommandItem,
 } from "@/components/ui/command";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuLabel,
+	ContextMenuSeparator,
+	ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
 	Dialog,
 	DialogContent,
@@ -98,9 +109,9 @@ import {
 import { cn } from "@/lib/utils";
 import { appRouter } from "@/server/api/root";
 import { api } from "@/utils/api";
+import { useWhitelabeling } from "@/utils/hooks/use-whitelabeling";
 
 export type Services = {
-	appName: string;
 	serverId?: string | null;
 	serverName?: string | null;
 	name: string;
@@ -111,12 +122,14 @@ export type Services = {
 		| "mysql"
 		| "mongo"
 		| "redis"
-		| "compose";
+		| "compose"
+		| "libsql";
 	description?: string | null;
 	id: string;
 	createdAt: string;
 	status?: "idle" | "running" | "done" | "error";
 	lastDeployDate?: Date | null;
+	icon?: string | null;
 };
 
 type Environment = Awaited<ReturnType<typeof findEnvironmentById>>;
@@ -146,7 +159,6 @@ export const extractServicesFromEnvironment = (
 				}
 			}
 			return {
-				appName: item.appName,
 				name: item.name,
 				type: "application",
 				id: item.applicationId,
@@ -156,12 +168,12 @@ export const extractServicesFromEnvironment = (
 				serverId: item.serverId,
 				serverName: item?.server?.name || null,
 				lastDeployDate,
+				icon: item.icon || null,
 			};
 		}) || [];
 
 	const mariadb: Services[] =
 		environment.mariadb?.map((item) => ({
-			appName: item.appName,
 			name: item.name,
 			type: "mariadb",
 			id: item.mariadbId,
@@ -174,7 +186,6 @@ export const extractServicesFromEnvironment = (
 
 	const postgres: Services[] =
 		environment.postgres?.map((item) => ({
-			appName: item.appName,
 			name: item.name,
 			type: "postgres",
 			id: item.postgresId,
@@ -187,7 +198,6 @@ export const extractServicesFromEnvironment = (
 
 	const mongo: Services[] =
 		environment.mongo?.map((item) => ({
-			appName: item.appName,
 			name: item.name,
 			type: "mongo",
 			id: item.mongoId,
@@ -200,7 +210,6 @@ export const extractServicesFromEnvironment = (
 
 	const redis: Services[] =
 		environment.redis?.map((item) => ({
-			appName: item.appName,
 			name: item.name,
 			type: "redis",
 			id: item.redisId,
@@ -213,7 +222,6 @@ export const extractServicesFromEnvironment = (
 
 	const mysql: Services[] =
 		environment.mysql?.map((item) => ({
-			appName: item.appName,
 			name: item.name,
 			type: "mysql",
 			id: item.mysqlId,
@@ -242,7 +250,6 @@ export const extractServicesFromEnvironment = (
 				}
 			}
 			return {
-				appName: item.appName,
 				name: item.name,
 				type: "compose",
 				id: item.composeId,
@@ -252,17 +259,31 @@ export const extractServicesFromEnvironment = (
 				serverId: item.serverId,
 				serverName: item?.server?.name || null,
 				lastDeployDate,
+				icon: item.icon || null,
 			};
 		}) || [];
 
+	const libsql: Services[] =
+		environment.libsql?.map((item) => ({
+			name: item.name,
+			type: "libsql",
+			id: item.libsqlId,
+			createdAt: item.createdAt,
+			status: item.applicationStatus,
+			description: item.description,
+			serverId: item.serverId,
+			serverName: item?.server?.name || null,
+		})) || [];
+
 	allServices.push(
 		...applications,
+		...compose,
+		...libsql,
 		...mysql,
 		...redis,
 		...mongo,
 		...postgres,
 		...mariadb,
-		...compose,
 	);
 
 	allServices.sort((a, b) => {
@@ -279,6 +300,7 @@ const EnvironmentPage = (
 	const [isBulkActionLoading, setIsBulkActionLoading] = useState(false);
 	const { projectId, environmentId } = props;
 	const { data: auth } = api.user.get.useQuery();
+	const { data: permissions } = api.user.getPermissions.useQuery();
 
 	const { data: environments } = api.environment.byProjectId.useQuery({
 		projectId: projectId,
@@ -366,7 +388,6 @@ const EnvironmentPage = (
 		environmentId,
 	});
 	const { data: allProjects } = api.project.all.useQuery();
-	const router = useRouter();
 
 	const [isMoveDialogOpen, setIsMoveDialogOpen] = useState(false);
 	const [selectedTargetProject, setSelectedTargetProject] =
@@ -379,6 +400,8 @@ const EnvironmentPage = (
 			{ projectId: selectedTargetProject },
 			{ enabled: !!selectedTargetProject },
 		);
+	const { config: whitelabeling } = useWhitelabeling();
+	const appName = whitelabeling?.appName || "Dokploy";
 
 	const emptyServices =
 		!currentEnvironment ||
@@ -388,7 +411,8 @@ const EnvironmentPage = (
 			(currentEnvironment.postgres?.length || 0) === 0 &&
 			(currentEnvironment.redis?.length || 0) === 0 &&
 			(currentEnvironment.applications?.length || 0) === 0 &&
-			(currentEnvironment.compose?.length || 0) === 0);
+			(currentEnvironment.compose?.length || 0) === 0 &&
+			(currentEnvironment.libsql?.length || 0) === 0);
 
 	const applications = extractServicesFromEnvironment(currentEnvironment);
 
@@ -401,6 +425,7 @@ const EnvironmentPage = (
 		{ value: "mysql", label: "MySQL", icon: MysqlIcon },
 		{ value: "redis", label: "Redis", icon: RedisIcon },
 		{ value: "compose", label: "Compose", icon: CircuitBoard },
+		{ value: "libsql", label: "Libsql", icon: LibsqlIcon },
 	];
 
 	const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
@@ -410,6 +435,7 @@ const EnvironmentPage = (
 	const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
 	const [deleteVolumes, setDeleteVolumes] = useState(false);
 	const [selectedServerId, setSelectedServerId] = useState<string>("all");
+	const [serviceToDelete, setServiceToDelete] = useState<Services | null>(null);
 
 	const handleSelectAll = () => {
 		if (selectedServices.length === filteredServices.length) {
@@ -420,6 +446,7 @@ const EnvironmentPage = (
 	};
 
 	const handleServiceSelect = (serviceId: string, event: React.MouseEvent) => {
+		event.preventDefault();
 		event.stopPropagation();
 		setSelectedServices((prev) =>
 			prev.includes(serviceId)
@@ -484,6 +511,14 @@ const EnvironmentPage = (
 		deploy: api.mongo.deploy.useMutation(),
 	};
 
+	const libsqlActions = {
+		start: api.libsql.start.useMutation(),
+		stop: api.libsql.stop.useMutation(),
+		move: api.libsql.move.useMutation(),
+		delete: api.libsql.remove.useMutation(),
+		deploy: api.libsql.deploy.useMutation(),
+	};
+
 	const handleBulkStart = async () => {
 		let success = 0;
 		setIsBulkActionLoading(true);
@@ -515,6 +550,9 @@ const EnvironmentPage = (
 						break;
 					case "mongo":
 						await mongoActions.start.mutateAsync({ mongoId: serviceId });
+						break;
+					case "libsql":
+						await libsqlActions.start.mutateAsync({ libsqlId: serviceId });
 						break;
 				}
 				success++;
@@ -562,6 +600,9 @@ const EnvironmentPage = (
 						break;
 					case "mongo":
 						await mongoActions.stop.mutateAsync({ mongoId: serviceId });
+						break;
+					case "libsql":
+						await libsqlActions.stop.mutateAsync({ libsqlId: serviceId });
 						break;
 				}
 				success++;
@@ -639,6 +680,12 @@ const EnvironmentPage = (
 							targetEnvironmentId: selectedTargetEnvironment,
 						});
 						break;
+					case "libsql":
+						await libsqlActions.move.mutateAsync({
+							libsqlId: serviceId,
+							targetEnvironmentId: selectedTargetEnvironment,
+						});
+						break;
 				}
 				await utils.environment.one.invalidate({
 					environmentId,
@@ -708,6 +755,11 @@ const EnvironmentPage = (
 							mongoId: serviceId,
 						});
 						break;
+					case "libsql":
+						await libsqlActions.delete.mutateAsync({
+							libsqlId: serviceId,
+						});
+						break;
 				}
 				await utils.environment.one.invalidate({
 					environmentId,
@@ -774,6 +826,11 @@ const EnvironmentPage = (
 							mongoId: serviceId,
 						});
 						break;
+					case "libsql":
+						await libsqlActions.deploy.mutateAsync({
+							libsqlId: serviceId,
+						});
+						break;
 				}
 				success++;
 			} catch (error) {
@@ -785,7 +842,7 @@ const EnvironmentPage = (
 		}
 		if (success > 0) {
 			toast.success(
-				`${success} service${success !== 1 ? "s" : ""} deployed successfully`,
+				`${success} service${success !== 1 ? "s" : ""} queued for deployment`,
 			);
 		}
 		if (failed > 0) {
@@ -797,6 +854,110 @@ const EnvironmentPage = (
 		setSelectedServices([]);
 		setIsDropdownOpen(false);
 		setIsBulkActionLoading(false);
+	};
+
+	const getServiceActions = (service: Services) => {
+		switch (service.type) {
+			case "application":
+				return applicationActions;
+			case "compose":
+				return composeActions;
+			case "postgres":
+				return postgresActions;
+			case "mysql":
+				return mysqlActions;
+			case "mariadb":
+				return mariadbActions;
+			case "redis":
+				return redisActions;
+			case "mongo":
+				return mongoActions;
+			default:
+				return null;
+		}
+	};
+
+	const getServiceIdKey = (service: Services) => {
+		switch (service.type) {
+			case "application":
+				return "applicationId";
+			case "compose":
+				return "composeId";
+			case "postgres":
+				return "postgresId";
+			case "mysql":
+				return "mysqlId";
+			case "mariadb":
+				return "mariadbId";
+			case "redis":
+				return "redisId";
+			case "mongo":
+				return "mongoId";
+			default:
+				return null;
+		}
+	};
+
+	const handleServiceAction = async (
+		service: Services,
+		action: "start" | "stop" | "deploy",
+	) => {
+		const actions = getServiceActions(service);
+		const idKey = getServiceIdKey(service);
+		if (!actions || !idKey) return;
+
+		const actionLabels = {
+			start: { loading: "Starting", success: "started", error: "starting" },
+			stop: { loading: "Stopping", success: "stopped", error: "stopping" },
+			deploy: {
+				loading: "Deploying",
+				success: "queued for deployment",
+				error: "deploying",
+			},
+		};
+
+		const labels = actionLabels[action];
+
+		toast.promise(
+			(async () => {
+				await actions[action].mutateAsync({
+					[idKey]: service.id,
+				} as any);
+			})(),
+			{
+				loading: `${labels.loading} ${service.name}...`,
+				success: () => {
+					utils.environment.one.invalidate({ environmentId });
+					return `${service.name} ${labels.success} successfully`;
+				},
+				error: (error) =>
+					`Error ${labels.error} ${service.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+			},
+		);
+	};
+
+	const handleServiceDelete = async (service: Services) => {
+		const actions = getServiceActions(service);
+		const idKey = getServiceIdKey(service);
+		if (!actions || !idKey) return;
+
+		toast.promise(
+			(async () => {
+				await actions.delete.mutateAsync({
+					[idKey]: service.id,
+				} as any);
+			})(),
+			{
+				loading: `Deleting ${service.name}...`,
+				success: () => {
+					utils.environment.one.invalidate({ environmentId });
+					return `${service.name} deleted successfully`;
+				},
+				error: (error) =>
+					`Error deleting ${service.name}: ${error instanceof Error ? error.message : "Unknown error"}`,
+			},
+		);
+		setServiceToDelete(null);
 	};
 
 	// Get unique servers from services
@@ -865,21 +1026,11 @@ const EnvironmentPage = (
 
 	return (
 		<div>
-			<BreadcrumbSidebar
-				list={[
-					{ name: "Projects", href: "/dashboard/projects" },
-					{
-						name: projectData?.name || "",
-					},
-					{
-						name: currentEnvironment.name,
-						dropdownItems: environmentDropdownItems,
-					},
-				]}
-			/>
+			<AdvanceBreadcrumb />
 			<Head>
 				<title>
-					Environment: {currentEnvironment.name} | {projectData?.name} | Dokploy
+					Environment: {currentEnvironment.name} | {projectData?.name} |{" "}
+					{appName}
 				</title>
 			</Head>
 			<div className="w-full">
@@ -889,7 +1040,9 @@ const EnvironmentPage = (
 							<CardHeader className="p-0">
 								<CardTitle className="text-xl flex flex-row gap-2 items-center">
 									<FolderInput className="size-6 text-muted-foreground self-center" />
-									{currentEnvironment.project.name}
+									<p className="text-base font-medium max-w-[250px] truncate">
+										{currentEnvironment.project.name}
+									</p>
 									<AdvancedEnvironmentSelector
 										projectId={projectId}
 										currentEnvironmentId={environmentId}
@@ -909,7 +1062,7 @@ const EnvironmentPage = (
 									<ProjectEnvironment projectId={projectId}>
 										<Button variant="outline">Project Environment</Button>
 									</ProjectEnvironment>
-									{(auth?.role === "owner" || auth?.canCreateServices) && (
+									{permissions?.service.create && (
 										<DropdownMenu>
 											<DropdownMenuTrigger asChild>
 												<Button>
@@ -942,6 +1095,10 @@ const EnvironmentPage = (
 													projectName={projectData?.name}
 													environmentId={environmentId}
 												/>
+												<AddImport
+													projectName={projectData?.name}
+													environmentId={environmentId}
+												/>
 											</DropdownMenuContent>
 										</DropdownMenu>
 									)}
@@ -950,7 +1107,7 @@ const EnvironmentPage = (
 						</div>
 						<CardContent className="space-y-2 py-8 border-t gap-4 flex flex-col min-h-[60vh]">
 							<>
-								<div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+								<div className="flex flex-col gap-4 2xl:flex-row 2xl:items-center 2xl:justify-between">
 									<div className="flex items-center gap-4">
 										<div className="flex items-center gap-2">
 											<Checkbox
@@ -1031,8 +1188,7 @@ const EnvironmentPage = (
 														Stop
 													</Button>
 												</DialogAction>
-												{(auth?.role === "owner" ||
-													auth?.canDeleteServices) && (
+												{permissions?.service.delete && (
 													<>
 														<DialogAction
 															title="Delete Services"
@@ -1468,101 +1624,164 @@ const EnvironmentPage = (
 										<div className="flex w-full flex-col gap-4">
 											<div className="gap-5 pb-10 grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3">
 												{filteredServices?.map((service) => (
-													<Card
-														key={service.id}
-														onClick={() => {
-															router.push(
-																`/dashboard/project/${projectId}/environment/${environmentId}/services/${service.type}/${service.id}`,
-															);
-														}}
-														className="flex flex-col group relative cursor-pointer bg-transparent transition-colors hover:bg-border"
-													>
-														{service.serverId && (
-															<div className="absolute -left-1 -top-2">
-																<ServerIcon className="size-4 text-muted-foreground" />
-															</div>
-														)}
-														<div className="absolute -right-1 -top-2">
-															<StatusTooltip status={service.status} />
-														</div>
-
-														<div
-															className={cn(
-																"absolute -left-3 -bottom-3 size-9 translate-y-1 rounded-full p-0 transition-all duration-200 z-10 bg-background border",
-																selectedServices.includes(service.id)
-																	? "opacity-100 translate-y-0"
-																	: "opacity-0 group-hover:translate-y-0 group-hover:opacity-100",
-															)}
-															onClick={(e) =>
-																handleServiceSelect(service.id, e)
-															}
-														>
-															<div className="h-full w-full flex items-center justify-center">
-																<Checkbox
-																	checked={selectedServices.includes(
-																		service.id,
+													<ContextMenu key={service.id}>
+														<ContextMenuTrigger asChild>
+															<Link
+																href={`/dashboard/project/${projectId}/environment/${environmentId}/services/${service.type}/${service.id}`}
+																className="block h-full"
+															>
+																<Card className="flex flex-col h-full group relative cursor-pointer bg-transparent transition-colors hover:bg-border">
+																	{service.serverId && (
+																		<div className="absolute -left-1 -top-2">
+																			<ServerIcon className="size-4 text-muted-foreground" />
+																		</div>
 																	)}
-																	className="data-[state=checked]:bg-primary"
-																/>
-															</div>
-														</div>
-
-														<CardHeader>
-															<CardTitle className="flex items-center justify-between">
-																<div className="flex flex-row items-center gap-2 justify-between w-full">
-																	<div className="flex flex-col gap-2">
-																		<span className="text-base flex items-center gap-2 font-medium leading-none flex-wrap">
-																			{service.name}
-																		</span>
-																		{service.description && (
-																			<span className="text-sm font-medium text-muted-foreground">
-																				{service.description}
-																			</span>
-																		)}
+																	<div className="absolute -right-1 -top-2">
+																		<StatusTooltip status={service.status} />
 																	</div>
 
-																	<span className="text-sm font-medium text-muted-foreground self-start">
-																		{service.type === "postgres" && (
-																			<PostgresqlIcon className="h-7 w-7" />
+																	<div
+																		className={cn(
+																			"absolute -left-3 -bottom-3 size-9 translate-y-1 rounded-full p-0 transition-all duration-200 z-10 bg-background border",
+																			selectedServices.includes(service.id)
+																				? "opacity-100 translate-y-0"
+																				: "opacity-0 group-hover:translate-y-0 group-hover:opacity-100",
 																		)}
-																		{service.type === "redis" && (
-																			<RedisIcon className="h-7 w-7" />
-																		)}
-																		{service.type === "mariadb" && (
-																			<MariadbIcon className="h-7 w-7" />
-																		)}
-																		{service.type === "mongo" && (
-																			<MongodbIcon className="h-7 w-7" />
-																		)}
-																		{service.type === "mysql" && (
-																			<MysqlIcon className="h-7 w-7" />
-																		)}
-																		{service.type === "application" && (
-																			<GlobeIcon className="h-6 w-6" />
-																		)}
-																		{service.type === "compose" && (
-																			<CircuitBoard className="h-6 w-6" />
-																		)}
-																	</span>
-																</div>
-															</CardTitle>
-														</CardHeader>
-														<CardFooter className="mt-auto">
-															<div className="space-y-1 text-sm w-full">
-																{service.serverName && (
-																	<div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-																		<ServerIcon className="size-3" />
-																		<span className="truncate">
-																			{service.serverName}
-																		</span>
+																		onClick={(e) =>
+																			handleServiceSelect(service.id, e)
+																		}
+																	>
+																		<div className="h-full w-full flex items-center justify-center">
+																			<Checkbox
+																				checked={selectedServices.includes(
+																					service.id,
+																				)}
+																				className="data-[state=checked]:bg-primary"
+																			/>
+																		</div>
 																	</div>
-																)}
-																<DateTooltip date={service.createdAt}>
-																	Created
-																</DateTooltip>
-															</div>
-														</CardFooter>
-													</Card>
+
+																	<CardHeader>
+																		<CardTitle className="flex items-center justify-between">
+																			<div className="flex flex-row items-center gap-2 justify-between w-full">
+																				<div className="flex flex-col gap-2">
+																					<span className="text-base flex items-center gap-2 font-medium leading-none flex-wrap">
+																						{service.name}
+																					</span>
+																					{service.description && (
+																						<span className="text-sm font-medium text-muted-foreground">
+																							{service.description}
+																						</span>
+																					)}
+																				</div>
+
+																				<span className="text-sm font-medium text-muted-foreground self-start">
+																					{service.type === "postgres" && (
+																						<PostgresqlIcon className="h-7 w-7" />
+																					)}
+																					{service.type === "redis" && (
+																						<RedisIcon className="h-7 w-7" />
+																					)}
+																					{service.type === "mariadb" && (
+																						<MariadbIcon className="h-7 w-7" />
+																					)}
+																					{service.type === "mongo" && (
+																						<MongodbIcon className="h-7 w-7" />
+																					)}
+																					{service.type === "mysql" && (
+																						<MysqlIcon className="h-7 w-7" />
+																					)}
+																					{service.type === "application" &&
+																						(service.icon ? (
+																							// biome-ignore lint/performance/noImgElement: application icon is data URL
+																							<img
+																								src={service.icon}
+																								alt={service.name}
+																								className="size-7 object-contain"
+																							/>
+																						) : (
+																							<GlobeIcon className="h-6 w-6" />
+																						))}
+																					{service.type === "compose" &&
+																						(service.icon ? (
+																							// biome-ignore lint/performance/noImgElement: compose icon is data URL
+																							<img
+																								src={service.icon}
+																								alt={service.name}
+																								className="size-7 object-contain rounded-sm"
+																							/>
+																						) : (
+																							<CircuitBoard className="h-6 w-6" />
+																						))}
+																					{service.type === "libsql" && (
+																						<LibsqlIcon className="h-6 w-6" />
+																					)}
+																				</span>
+																			</div>
+																		</CardTitle>
+																	</CardHeader>
+																	<CardFooter className="mt-auto">
+																		<div className="space-y-1 text-sm w-full">
+																			{service.serverName && (
+																				<div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
+																					<ServerIcon className="size-3" />
+																					<span className="truncate">
+																						{service.serverName}
+																					</span>
+																				</div>
+																			)}
+																			<DateTooltip date={service.createdAt}>
+																				Created
+																			</DateTooltip>
+																		</div>
+																	</CardFooter>
+																</Card>
+															</Link>
+														</ContextMenuTrigger>
+														{service.type !== "libsql" && (
+															<ContextMenuContent className="w-48">
+																<ContextMenuLabel className="truncate">
+																	{service.name}
+																</ContextMenuLabel>
+																<ContextMenuSeparator />
+																<ContextMenuItem
+																	className="flex items-center gap-2"
+																	onClick={() =>
+																		handleServiceAction(service, "start")
+																	}
+																>
+																	<Play className="size-4" />
+																	Start
+																</ContextMenuItem>
+																<ContextMenuItem
+																	className="flex items-center gap-2"
+																	onClick={() =>
+																		handleServiceAction(service, "deploy")
+																	}
+																>
+																	<RefreshCw className="size-4" />
+																	Deploy
+																</ContextMenuItem>
+																<ContextMenuItem
+																	className="flex items-center gap-2 text-orange-500 focus:text-orange-500"
+																	onClick={() =>
+																		handleServiceAction(service, "stop")
+																	}
+																>
+																	<Ban className="size-4" />
+																	Stop
+																</ContextMenuItem>
+																<ContextMenuSeparator />
+																<ContextMenuItem
+																	className="flex items-center gap-2 text-red-500 focus:text-red-500"
+																	onClick={() => setServiceToDelete(service)}
+																>
+																	<Trash2 className="size-4" />
+																	Delete
+																</ContextMenuItem>
+															</ContextMenuContent>
+														)}
+													</ContextMenu>
 												))}
 											</div>
 										</div>
@@ -1573,6 +1792,38 @@ const EnvironmentPage = (
 					</div>
 				</Card>
 			</div>
+
+			{/* Single Service Delete Dialog */}
+			<Dialog
+				open={!!serviceToDelete}
+				onOpenChange={(open) => !open && setServiceToDelete(null)}
+			>
+				<DialogContent>
+					<DialogHeader>
+						<DialogTitle>Delete Service</DialogTitle>
+						<DialogDescription>
+							Are you sure you want to delete{" "}
+							<span className="font-semibold">{serviceToDelete?.name}</span>?
+							This action cannot be undone.
+						</DialogDescription>
+					</DialogHeader>
+					<DialogFooter>
+						<Button variant="outline" onClick={() => setServiceToDelete(null)}>
+							Cancel
+						</Button>
+						<Button
+							variant="destructive"
+							onClick={() => {
+								if (serviceToDelete) {
+									handleServiceDelete(serviceToDelete);
+								}
+							}}
+						>
+							Delete
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
 		</div>
 	);
 };
@@ -1592,7 +1843,7 @@ export async function getServerSideProps(
 	if (!user) {
 		return {
 			redirect: {
-				permanent: true,
+				permanent: false,
 				destination: "/",
 			},
 		};
@@ -1621,9 +1872,40 @@ export async function getServerSideProps(
 				projectId: params.projectId,
 			});
 
-			await helpers.environment.one.fetch({
-				environmentId: params.environmentId,
-			});
+			// Try to fetch the requested environment
+			try {
+				await helpers.environment.one.fetch({
+					environmentId: params.environmentId,
+				});
+			} catch (error) {
+				console.log(error);
+				// If user doesn't have access to requested environment, redirect to accessible one
+				const accessibleEnvironments =
+					await helpers.environment.byProjectId.fetch({
+						projectId: params.projectId,
+					});
+
+				if (accessibleEnvironments.length > 0) {
+					// Try to find default, otherwise use first accessible
+					const targetEnv =
+						accessibleEnvironments.find((env) => env.isDefault) ||
+						accessibleEnvironments[0]!;
+
+					return {
+						redirect: {
+							permanent: false,
+							destination: `/dashboard/project/${params.projectId}/environment/${targetEnv.environmentId}`,
+						},
+					};
+				}
+				// No accessible environments, redirect to projects
+				return {
+					redirect: {
+						permanent: false,
+						destination: "/dashboard/home",
+					},
+				};
+			}
 
 			await helpers.environment.byProjectId.fetch({
 				projectId: params.projectId,
@@ -1636,7 +1918,8 @@ export async function getServerSideProps(
 					environmentId: params.environmentId,
 				},
 			};
-		} catch {
+		} catch (error) {
+			console.log(error);
 			return {
 				redirect: {
 					permanent: false,

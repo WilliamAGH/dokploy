@@ -1,16 +1,19 @@
 import { db } from "@dokploy/server/db";
 import {
 	type apiCreateServer,
+	member,
 	organization,
 	server,
 } from "@dokploy/server/db/schema";
+import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
+import type { z } from "zod";
 
 export type Server = typeof server.$inferSelect;
 
 export const createServer = async (
-	input: typeof apiCreateServer._type,
+	input: z.infer<typeof apiCreateServer>,
 	organizationId: string,
 ) => {
 	const newServer = await db
@@ -19,7 +22,7 @@ export const createServer = async (
 			...input,
 			organizationId: organizationId,
 			createdAt: new Date().toISOString(),
-		})
+		} as typeof server.$inferInsert)
 		.returning()
 		.then((value) => value[0]);
 
@@ -50,6 +53,27 @@ export const findServerById = async (serverId: string) => {
 	return currentServer;
 };
 
+/**
+ * Removes the SSH private key material from a server record before it is sent
+ * to a client. `findServerById` eagerly loads the `sshKey` relation (needed for
+ * server-side SSH operations), but the private key must never leave the server:
+ * no client feature consumes it, and returning it exposed it to any member with
+ * only `server:read`. Server-side callers keep using `findServerById` directly.
+ */
+export const redactServerSshKey = <
+	T extends { sshKey?: { privateKey: string } | null },
+>(
+	serverRecord: T,
+): T => {
+	if (!serverRecord.sshKey) {
+		return serverRecord;
+	}
+	return {
+		...serverRecord,
+		sshKey: { ...serverRecord.sshKey, privateKey: "" },
+	};
+};
+
 export const findServersByUserId = async (userId: string) => {
 	const orgs = await db.query.organization.findMany({
 		where: eq(organization.ownerId, userId),
@@ -76,14 +100,16 @@ export const deleteServer = async (serverId: string) => {
 export const haveActiveServices = async (serverId: string) => {
 	const currentServer = await db.query.server.findFirst({
 		where: eq(server.serverId, serverId),
+		columns: { serverId: true },
 		with: {
-			applications: true,
-			compose: true,
-			redis: true,
-			mariadb: true,
-			mongo: true,
-			mysql: true,
-			postgres: true,
+			applications: { columns: { applicationId: true } },
+			compose: { columns: { composeId: true } },
+			libsql: { columns: { libsqlId: true } },
+			mariadb: { columns: { mariadbId: true } },
+			mongo: { columns: { mongoId: true } },
+			mysql: { columns: { mysqlId: true } },
+			postgres: { columns: { postgresId: true } },
+			redis: { columns: { redisId: true } },
 		},
 	});
 
@@ -94,11 +120,12 @@ export const haveActiveServices = async (serverId: string) => {
 	const total =
 		currentServer?.applications?.length +
 		currentServer?.compose?.length +
-		currentServer?.redis?.length +
+		currentServer?.libsql?.length +
 		currentServer?.mariadb?.length +
 		currentServer?.mongo?.length +
 		currentServer?.mysql?.length +
-		currentServer?.postgres?.length;
+		currentServer?.postgres?.length +
+		currentServer?.redis?.length;
 
 	if (total === 0) {
 		return false;
@@ -126,4 +153,38 @@ export const updateServerById = async (
 export const getAllServers = async () => {
 	const servers = await db.query.server.findMany();
 	return servers;
+};
+
+export const getAccessibleServerIds = async (session: {
+	userId: string;
+	activeOrganizationId: string;
+}): Promise<Set<string>> => {
+	const { userId, activeOrganizationId } = session;
+
+	const allOrgServers = await db.query.server.findMany({
+		where: eq(server.organizationId, activeOrganizationId),
+		columns: {
+			serverId: true,
+		},
+	});
+
+	const memberRecord = await db.query.member.findFirst({
+		where: and(
+			eq(member.userId, userId),
+			eq(member.organizationId, activeOrganizationId),
+		),
+		columns: { accessedServers: true, role: true },
+	});
+
+	if (memberRecord?.role === "owner" || memberRecord?.role === "admin") {
+		return new Set(allOrgServers.map((s) => s.serverId));
+	}
+
+	const licensed = await hasValidLicense(activeOrganizationId);
+
+	if (!licensed) {
+		return new Set(allOrgServers.map((s) => s.serverId));
+	}
+
+	return new Set(memberRecord?.accessedServers ?? []);
 };

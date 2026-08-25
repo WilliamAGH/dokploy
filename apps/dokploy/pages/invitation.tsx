@@ -1,5 +1,5 @@
 import { getUserByToken, IS_CLOUD } from "@dokploy/server";
-import { zodResolver } from "@hookform/resolvers/zod";
+import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import type { GetServerSidePropsContext } from "next";
 import Link from "next/link";
 import { useRouter } from "next/router";
@@ -21,8 +21,10 @@ import {
 	FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { pushToDataLayer } from "@/lib/analytics";
 import { authClient } from "@/lib/auth-client";
 import { api } from "@/utils/api";
+import { useWhitelabelingPublic } from "@/utils/hooks/use-whitelabeling";
 
 const registerSchema = z
 	.object({
@@ -82,6 +84,7 @@ const Invitation = ({
 	userAlreadyExists,
 }: Props) => {
 	const router = useRouter();
+	const { config: whitelabeling } = useWhitelabelingPublic();
 	const { data } = api.user.getUserByToken.useQuery(
 		{
 			token,
@@ -137,7 +140,10 @@ const Invitation = ({
 			});
 
 			toast.success("Account created successfully");
-			router.push("/dashboard/projects");
+			if (isCloud) {
+				pushToDataLayer("sign_up", { method: "invitation" });
+			}
+			router.push("/dashboard/home");
 		} catch {
 			toast.error("An error occurred while creating your account");
 		}
@@ -148,12 +154,15 @@ const Invitation = ({
 			<div className="flex  h-screen w-full items-center justify-center ">
 				<div className="flex flex-col items-center gap-4 w-full">
 					<CardTitle className="text-2xl font-bold flex items-center gap-2">
-						<Link
-							href="https://dokploy.com"
-							target="_blank"
-							className="flex flex-row items-center gap-2"
-						>
-							<Logo className="size-12" />
+						<Link href="/" className="flex flex-row items-center gap-2">
+							<Logo
+								className="size-12"
+								logoUrl={
+									whitelabeling?.loginLogoUrl ||
+									whitelabeling?.logoUrl ||
+									undefined
+								}
+							/>
 						</Link>
 						Invitation
 					</CardTitle>
@@ -328,7 +337,7 @@ export async function getServerSideProps(ctx: GetServerSidePropsContext) {
 	// if (IS_CLOUD) {
 	// 	return {
 	// 		redirect: {
-	// 			permanent: true,
+	// 			permanent: false,
 	// 			destination: "/",
 	// 		},
 	// 	};
@@ -337,7 +346,7 @@ export async function getServerSideProps(ctx: GetServerSidePropsContext) {
 	if (typeof token !== "string") {
 		return {
 			redirect: {
-				permanent: true,
+				permanent: false,
 				destination: "/",
 			},
 		};
@@ -360,7 +369,7 @@ export async function getServerSideProps(ctx: GetServerSidePropsContext) {
 		if (invitation.isExpired) {
 			return {
 				redirect: {
-					permanent: true,
+					permanent: false,
 					destination: "/",
 				},
 			};
@@ -377,7 +386,7 @@ export async function getServerSideProps(ctx: GetServerSidePropsContext) {
 		console.log("error", error);
 		return {
 			redirect: {
-				permanent: true,
+				permanent: false,
 				destination: "/",
 			},
 		};

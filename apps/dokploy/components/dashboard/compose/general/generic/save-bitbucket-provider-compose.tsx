@@ -1,4 +1,5 @@
-import { zodResolver } from "@hookform/resolvers/zod";
+import { VALID_BRANCH_REGEX } from "@dokploy/server/utils/git-branch-validation";
+import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { CheckIcon, ChevronsUpDown, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect } from "react";
@@ -54,9 +55,13 @@ const BitbucketProviderSchema = z.object({
 		.object({
 			repo: z.string().min(1, "Repo is required"),
 			owner: z.string().min(1, "Owner is required"),
+			slug: z.string().optional(),
 		})
 		.required(),
-	branch: z.string().min(1, "Branch is required"),
+	branch: z
+		.string()
+		.min(1, "Branch is required")
+		.regex(VALID_BRANCH_REGEX, "Invalid branch name"),
 	bitbucketId: z.string().min(1, "Bitbucket Provider is required"),
 	watchPaths: z.array(z.string()).optional(),
 	enableSubmodules: z.boolean().default(false),
@@ -73,15 +78,16 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 		api.bitbucket.bitbucketProviders.useQuery();
 	const { data, refetch } = api.compose.one.useQuery({ composeId });
 
-	const { mutateAsync, isLoading: isSavingBitbucketProvider } =
+	const { mutateAsync, isPending: isSavingBitbucketProvider } =
 		api.compose.update.useMutation();
 
-	const form = useForm<BitbucketProvider>({
+	const form = useForm({
 		defaultValues: {
 			composePath: "./docker-compose.yml",
 			repository: {
 				owner: "",
 				repo: "",
+				slug: "",
 			},
 			bitbucketId: "",
 			branch: "",
@@ -114,11 +120,14 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 	} = api.bitbucket.getBitbucketBranches.useQuery(
 		{
 			owner: repository?.owner,
-			repo: repository?.repo,
+			repo: repository?.slug || repository?.repo || "",
 			bitbucketId,
 		},
 		{
-			enabled: !!repository?.owner && !!repository?.repo && !!bitbucketId,
+			enabled:
+				!!repository?.owner &&
+				!!(repository?.slug || repository?.repo) &&
+				!!bitbucketId,
 		},
 	);
 
@@ -129,6 +138,7 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 				repository: {
 					repo: data.bitbucketRepository || "",
 					owner: data.bitbucketOwner || "",
+					slug: data.bitbucketRepositorySlug || "",
 				},
 				composePath: data.composePath,
 				bitbucketId: data.bitbucketId || "",
@@ -142,6 +152,7 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 		await mutateAsync({
 			bitbucketBranch: data.branch,
 			bitbucketRepository: data.repository.repo,
+			bitbucketRepositorySlug: data.repository.slug || data.repository.repo,
 			bitbucketOwner: data.repository.owner,
 			bitbucketId: data.bitbucketId,
 			composePath: data.composePath,
@@ -179,14 +190,17 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 									<FormLabel>Bitbucket Account</FormLabel>
 									<Select
 										onValueChange={(value) => {
+											if (!value) {
+												return;
+											}
 											field.onChange(value);
 											form.setValue("repository", {
 												owner: "",
 												repo: "",
+												slug: "",
 											});
 											form.setValue("branch", "");
 										}}
-										defaultValue={field.value}
 										value={field.value}
 									>
 										<FormControl>
@@ -219,7 +233,7 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 										<FormLabel>Repository</FormLabel>
 										{field.value.owner && field.value.repo && (
 											<Link
-												href={`https://bitbucket.org/${field.value.owner}/${field.value.repo}`}
+												href={`https://bitbucket.org/${field.value.owner}/${field.value.slug || field.value.repo}`}
 												target="_blank"
 												rel="noopener noreferrer"
 												className="flex items-center gap-1 text-sm text-muted-foreground hover:text-primary"
@@ -235,50 +249,60 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 												<Button
 													variant="outline"
 													className={cn(
-														"w-full justify-between !bg-input",
+														"w-full justify-between",
 														!field.value && "text-muted-foreground",
 													)}
 												>
-													{isLoadingRepositories
-														? "Loading...."
-														: field.value.owner
-															? repositories?.find(
-																	(repo) => repo.name === field.value.repo,
-																)?.name
-															: "Select repository"}
+													{!field.value.owner
+														? "Select repository"
+														: isLoadingRepositories
+															? "Loading...."
+															: (repositories?.find(
+																	(repo) =>
+																		repo.name === field.value.repo &&
+																		repo.owner.username === field.value.owner,
+																)?.name ?? "Select repository")}
 
 													<ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
 												</Button>
 											</FormControl>
 										</PopoverTrigger>
-										<PopoverContent className="p-0" align="start">
+										<PopoverContent
+											className="w-[var(--radix-popover-trigger-width)] p-0"
+											align="start"
+										>
 											<Command>
 												<CommandInput
 													placeholder="Search repository..."
 													className="h-9"
 												/>
-												{isLoadingRepositories && (
+												{!bitbucketId ? (
+													<span className="py-6 text-center text-sm text-muted-foreground">
+														Select a Bitbucket account first
+													</span>
+												) : isLoadingRepositories ? (
 													<span className="py-6 text-center text-sm">
 														Loading Repositories....
 													</span>
-												)}
+												) : null}
 												<CommandEmpty>No repositories found.</CommandEmpty>
 												<ScrollArea className="h-96">
 													<CommandGroup>
 														{repositories?.map((repo) => (
 															<CommandItem
-																value={repo.name}
+																value={`${repo.owner.username}/${repo.name}`}
 																key={repo.url}
 																onSelect={() => {
 																	form.setValue("repository", {
 																		owner: repo.owner.username as string,
 																		repo: repo.name,
+																		slug: repo.slug,
 																	});
 																	form.setValue("branch", "");
 																}}
 															>
-																<span className="flex items-center gap-2">
-																	<span>{repo.name}</span>
+																<span className="flex min-w-0 items-center gap-2">
+																	<span className="truncate">{repo.name}</span>
 																	<span className="text-muted-foreground text-xs">
 																		{repo.owner.username}
 																	</span>
@@ -286,7 +310,8 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 																<CheckIcon
 																	className={cn(
 																		"ml-auto h-4 w-4",
-																		repo.name === field.value.repo
+																		repo.name === field.value.repo &&
+																			repo.owner.username === field.value.owner
 																			? "opacity-100"
 																			: "opacity-0",
 																	)}
@@ -318,11 +343,11 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 												<Button
 													variant="outline"
 													className={cn(
-														" w-full justify-between !bg-input",
+														" w-full justify-between",
 														!field.value && "text-muted-foreground",
 													)}
 												>
-													{status === "loading" && fetchStatus === "fetching"
+													{status === "pending" && fetchStatus === "fetching"
 														? "Loading...."
 														: field.value
 															? branches?.find(
@@ -333,13 +358,16 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 												</Button>
 											</FormControl>
 										</PopoverTrigger>
-										<PopoverContent className="p-0" align="start">
+										<PopoverContent
+											className="w-[var(--radix-popover-trigger-width)] p-0"
+											align="start"
+										>
 											<Command>
 												<CommandInput
 													placeholder="Search branch..."
 													className="h-9"
 												/>
-												{status === "loading" && fetchStatus === "fetching" && (
+												{status === "pending" && fetchStatus === "fetching" && (
 													<span className="py-6 text-center text-sm text-muted-foreground">
 														Loading Branches....
 													</span>
@@ -361,7 +389,7 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 																	form.setValue("branch", branch.name);
 																}}
 															>
-																{branch.name}
+																<span className="truncate">{branch.name}</span>
 																<CheckIcon
 																	className={cn(
 																		"ml-auto h-4 w-4",
@@ -405,7 +433,7 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 										<FormLabel>Watch Paths</FormLabel>
 										<TooltipProvider>
 											<Tooltip>
-												<TooltipTrigger>
+												<TooltipTrigger type="button">
 													<div className="size-4 rounded-full bg-muted flex items-center justify-center text-[10px] font-bold">
 														?
 													</div>
@@ -423,14 +451,18 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 										{field.value?.map((path, index) => (
 											<Badge key={index} variant="secondary">
 												{path}
-												<X
-													className="ml-1 size-3 cursor-pointer"
+												<button
+													type="button"
+													aria-label="Remove watch path"
+													className="inline-flex items-center focus-visible:ring-2"
 													onClick={() => {
 														const newPaths = [...(field.value || [])];
 														newPaths.splice(index, 1);
 														form.setValue("watchPaths", newPaths);
 													}}
-												/>
+												>
+													<X className="ml-1 size-3 cursor-pointer" />
+												</button>
 											</Badge>
 										))}
 									</div>
@@ -478,14 +510,14 @@ export const SaveBitbucketProviderCompose = ({ composeId }: Props) => {
 							control={form.control}
 							name="enableSubmodules"
 							render={({ field }) => (
-								<FormItem className="flex items-center space-x-2">
+								<FormItem className="flex flex-row items-center space-x-2 space-y-0">
 									<FormControl>
 										<Switch
 											checked={field.value}
 											onCheckedChange={field.onChange}
 										/>
 									</FormControl>
-									<FormLabel className="!mt-0">Enable Submodules</FormLabel>
+									<FormLabel>Enable Submodules</FormLabel>
 								</FormItem>
 							)}
 						/>

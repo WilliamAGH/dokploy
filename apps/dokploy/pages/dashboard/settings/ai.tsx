@@ -6,7 +6,6 @@ import superjson from "superjson";
 import { AiForm } from "@/components/dashboard/settings/ai-form";
 import { DashboardLayout } from "@/components/layouts/dashboard-layout";
 import { appRouter } from "@/server/api/root";
-import { getLocale, serverSideTranslations } from "@/utils/i18n";
 
 const Page = () => {
 	return (
@@ -26,7 +25,6 @@ export async function getServerSideProps(
 ) {
 	const { req, res } = ctx;
 	const { user, session } = await validateRequest(req);
-	const locale = getLocale(req.cookies);
 
 	const helpers = createServerSideHelpers({
 		router: appRouter,
@@ -47,7 +45,7 @@ export async function getServerSideProps(
 	if (!user || user.role === "member") {
 		return {
 			redirect: {
-				permanent: true,
+				permanent: false,
 				destination: "/",
 			},
 		};
@@ -55,7 +53,6 @@ export async function getServerSideProps(
 	return {
 		props: {
 			trpcState: helpers.dehydrate(),
-			...(await serverSideTranslations(locale, ["settings"])),
 		},
 	};
 }

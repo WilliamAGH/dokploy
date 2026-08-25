@@ -1,4 +1,4 @@
-import { zodResolver } from "@hookform/resolvers/zod";
+import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { PlusIcon } from "lucide-react";
 import type React from "react";
 import { useEffect, useState } from "react";
@@ -41,14 +41,14 @@ interface Props {
 	serviceId: string;
 	serviceType:
 		| "application"
-		| "postgres"
-		| "redis"
-		| "mongo"
-		| "redis"
-		| "mysql"
+		| "compose"
+		| "libsql"
 		| "mariadb"
-		| "compose";
-	sourceType?: string;
+		| "mongo"
+		| "mysql"
+		| "postgres"
+		| "redis";
+	isRawCompose?: boolean;
 	refetch: () => void;
 	children?: React.ReactNode;
 }
@@ -90,7 +90,7 @@ type AddMount = z.infer<typeof mySchema>;
 export const AddVolumes = ({
 	serviceId,
 	serviceType,
-	sourceType,
+	isRawCompose = false,
 	refetch,
 	children = <PlusIcon className="h-4 w-4" />,
 }: Props) => {
@@ -99,11 +99,6 @@ export const AddVolumes = ({
 	const { mutateAsync } = api.mounts.create.useMutation();
 	const { mutateAsync: addComposeVolume } =
 		api.compose.addComposeVolume.useMutation();
-	const { data: services } = api.compose.loadServices.useQuery(
-		{ composeId: serviceId, type: "cache" },
-		{ enabled: serviceType === "compose" && sourceType === "raw" },
-	);
-	const isRawCompose = serviceType === "compose" && sourceType === "raw";
 	const form = useForm<AddMount>({
 		defaultValues: {
 			type: serviceType === "compose" && !isRawCompose ? "file" : "bind",
@@ -113,6 +108,10 @@ export const AddVolumes = ({
 		resolver: zodResolver(mySchema),
 	});
 	const type = form.watch("type");
+	const { data: services } = api.compose.loadServices.useQuery(
+		{ composeId: serviceId, type: "cache" },
+		{ enabled: isOpen && isRawCompose && type !== "file" },
+	);
 
 	useEffect(() => {
 		form.reset();
@@ -125,7 +124,12 @@ export const AddVolumes = ({
 				return;
 			}
 			const source = data.type === "bind" ? data.hostPath : data.volumeName;
-			await addComposeVolume({ composeId: serviceId, serviceName, source, target: data.mountPath })
+			await addComposeVolume({
+				composeId: serviceId,
+				serviceName,
+				source,
+				target: data.mountPath,
+			})
 				.then(() => {
 					toast.success("Volume created successfully");
 					setIsOpen(false);
@@ -251,7 +255,7 @@ export const AddVolumes = ({
 															/>
 															<Label
 																htmlFor="bind"
-																className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary [&:has([data-state=checked])]:border-primary cursor-pointer"
+																className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary has-data-[state=checked]:border-primary cursor-pointer"
 															>
 																Bind Mount
 															</Label>
@@ -271,7 +275,7 @@ export const AddVolumes = ({
 															/>
 															<Label
 																htmlFor="volume"
-																className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary [&:has([data-state=checked])]:border-primary cursor-pointer"
+																className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary has-data-[state=checked]:border-primary cursor-pointer"
 															>
 																Volume Mount
 															</Label>
@@ -297,7 +301,7 @@ export const AddVolumes = ({
 														/>
 														<Label
 															htmlFor="file"
-															className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary [&:has([data-state=checked])]:border-primary cursor-pointer"
+															className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary has-data-[state=checked]:border-primary cursor-pointer"
 														>
 															File Mount
 														</Label>
@@ -357,7 +361,7 @@ export const AddVolumes = ({
 											control={form.control}
 											name="content"
 											render={({ field }) => (
-												<FormItem className="max-w-full max-w-[45rem]">
+												<FormItem className="max-w-full max-w-180">
 													<FormLabel>Content</FormLabel>
 													<FormControl>
 														<FormControl>

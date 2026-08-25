@@ -1,5 +1,12 @@
 import { relations } from "drizzle-orm";
-import { bigint, integer, json, pgTable, text } from "drizzle-orm/pg-core";
+import {
+	bigint,
+	boolean,
+	integer,
+	json,
+	pgTable,
+	text,
+} from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { nanoid } from "nanoid";
 import { z } from "zod";
@@ -22,10 +29,17 @@ import {
 	RestartPolicySwarmSchema,
 	type ServiceModeSwarm,
 	ServiceModeSwarmSchema,
+	type UlimitsSwarm,
+	UlimitsSwarmSchema,
 	type UpdateConfigSwarm,
 	UpdateConfigSwarmSchema,
 } from "./shared";
-import { generateAppName } from "./utils";
+import {
+	APP_NAME_MESSAGE,
+	APP_NAME_REGEX,
+	encryptedText,
+	generateAppName,
+} from "./utils";
 
 export const redis = pgTable("redis", {
 	redisId: text("redisId")
@@ -42,7 +56,7 @@ export const redis = pgTable("redis", {
 	dockerImage: text("dockerImage").notNull(),
 	command: text("command"),
 	args: text("args").array(),
-	env: text("env"),
+	env: encryptedText("env"),
 	memoryReservation: text("memoryReservation"),
 	memoryLimit: text("memoryLimit"),
 	cpuReservation: text("cpuReservation"),
@@ -62,8 +76,9 @@ export const redis = pgTable("redis", {
 	modeSwarm: json("modeSwarm").$type<ServiceModeSwarm>(),
 	labelsSwarm: json("labelsSwarm").$type<LabelsSwarm>(),
 	networkSwarm: json("networkSwarm").$type<NetworkSwarm[]>(),
-	stopGracePeriodSwarm: bigint("stopGracePeriodSwarm", { mode: "bigint" }),
+	stopGracePeriodSwarm: bigint("stopGracePeriodSwarm", { mode: "number" }),
 	endpointSpecSwarm: json("endpointSpecSwarm").$type<EndpointSpecSwarm>(),
+	ulimitsSwarm: json("ulimitsSwarm").$type<UlimitsSwarm>(),
 	replicas: integer("replicas").default(1).notNull(),
 
 	environmentId: text("environmentId")
@@ -72,6 +87,10 @@ export const redis = pgTable("redis", {
 	serverId: text("serverId").references(() => server.serverId, {
 		onDelete: "cascade",
 	}),
+	networkIds: text("networkIds").array().default([]),
+	detachDokployNetwork: boolean("detachDokployNetwork")
+		.notNull()
+		.default(false),
 });
 
 export const redisRelations = relations(redis, ({ one, many }) => ({
@@ -88,7 +107,12 @@ export const redisRelations = relations(redis, ({ one, many }) => ({
 
 const createSchema = createInsertSchema(redis, {
 	redisId: z.string(),
-	appName: z.string().min(1),
+	appName: z
+		.string()
+		.min(1)
+		.max(63)
+		.regex(APP_NAME_REGEX, APP_NAME_MESSAGE)
+		.optional(),
 	createdAt: z.string(),
 	name: z.string().min(1),
 	databasePassword: z.string(),
@@ -113,27 +137,26 @@ const createSchema = createInsertSchema(redis, {
 	modeSwarm: ServiceModeSwarmSchema.nullable(),
 	labelsSwarm: LabelsSwarmSchema.nullable(),
 	networkSwarm: NetworkSwarmSchema.nullable(),
-	stopGracePeriodSwarm: z.bigint().nullable(),
+	stopGracePeriodSwarm: z.number().nullable(),
 	endpointSpecSwarm: EndpointSpecSwarmSchema.nullable(),
+	ulimitsSwarm: UlimitsSwarmSchema.nullable(),
+	networkIds: z.array(z.string()).optional(),
+	detachDokployNetwork: z.boolean().optional(),
 });
 
-export const apiCreateRedis = createSchema
-	.pick({
-		name: true,
-		appName: true,
-		databasePassword: true,
-		dockerImage: true,
-		environmentId: true,
-		description: true,
-		serverId: true,
-	})
-	.required();
+export const apiCreateRedis = createSchema.pick({
+	name: true,
+	appName: true,
+	databasePassword: true,
+	dockerImage: true,
+	environmentId: true,
+	description: true,
+	serverId: true,
+});
 
-export const apiFindOneRedis = createSchema
-	.pick({
-		redisId: true,
-	})
-	.required();
+export const apiFindOneRedis = z.object({
+	redisId: z.string().min(1),
+});
 
 export const apiChangeRedisStatus = createSchema
 	.pick({
@@ -173,6 +196,7 @@ export const apiUpdateRedis = createSchema
 	.partial()
 	.extend({
 		redisId: z.string().min(1),
+		dockerImage: z.string().optional(),
 	})
 	.omit({ serverId: true });
 

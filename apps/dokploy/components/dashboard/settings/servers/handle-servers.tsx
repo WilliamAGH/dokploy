@@ -1,7 +1,6 @@
-import { zodResolver } from "@hookform/resolvers/zod";
+import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { Pencil, PlusIcon } from "lucide-react";
 import Link from "next/link";
-import { useTranslation } from "next-i18next";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
@@ -21,6 +20,7 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import {
 	Form,
 	FormControl,
+	FormDescription,
 	FormField,
 	FormItem,
 	FormLabel,
@@ -36,6 +36,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/utils/api";
 
@@ -53,6 +54,7 @@ const Schema = z.object({
 		message: "SSH Key is required",
 	}),
 	serverType: z.enum(["deploy", "build"]).default("deploy"),
+	enableDockerCleanup: z.boolean().default(true),
 });
 
 type Schema = z.infer<typeof Schema>;
@@ -63,8 +65,6 @@ interface Props {
 }
 
 export const HandleServers = ({ serverId, asButton = false }: Props) => {
-	const { t } = useTranslation("settings");
-
 	const utils = api.useUtils();
 	const [isOpen, setIsOpen] = useState(false);
 	const { data: canCreateMoreServers, refetch } =
@@ -80,10 +80,10 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 	);
 
 	const { data: sshKeys } = api.sshKey.all.useQuery();
-	const { mutateAsync, error, isLoading, isError } = serverId
+	const { mutateAsync, error, isPending, isError } = serverId
 		? api.server.update.useMutation()
 		: api.server.create.useMutation();
-	const form = useForm<Schema>({
+	const form = useForm({
 		defaultValues: {
 			description: "",
 			name: "",
@@ -92,6 +92,7 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 			username: "root",
 			sshKeyId: "",
 			serverType: "deploy",
+			enableDockerCleanup: true,
 		},
 		resolver: zodResolver(Schema),
 	});
@@ -105,6 +106,7 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 			username: data?.username || "root",
 			sshKeyId: data?.sshKeyId || "",
 			serverType: data?.serverType || "deploy",
+			enableDockerCleanup: data?.enableDockerCleanup ?? true,
 		});
 	}, [form, form.reset, form.formState.isSubmitSuccessful, data]);
 
@@ -121,6 +123,7 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 			username: data.username || "root",
 			sshKeyId: data.sshKeyId || "",
 			serverType: data.serverType || "deploy",
+			enableDockerCleanup: data.enableDockerCleanup,
 			serverId: serverId || "",
 		})
 			.then(async (_data) => {
@@ -174,9 +177,8 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 				</DialogHeader>
 				<div>
 					<p className="text-primary text-sm font-medium">
-						You will need to purchase or rent a Virtual Private Server (VPS) to
-						proceed, we recommend to use one of these providers since has been
-						heavily tested.
+						You may need to purchase or rent a Virtual Private Server (VPS) to
+						proceed. We recommend using one of these heavily tested providers:
 					</p>
 					<ul className="list-inside list-disc pl-4 text-sm text-muted-foreground mt-4">
 						<li>
@@ -365,7 +367,7 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 								name="ipAddress"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>{t("settings.terminal.ipAddress")}</FormLabel>
+										<FormLabel>IP Address</FormLabel>
 										<FormControl>
 											<Input placeholder="192.168.1.100" {...field} />
 										</FormControl>
@@ -379,7 +381,7 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 								name="port"
 								render={({ field }) => (
 									<FormItem>
-										<FormLabel>{t("settings.terminal.port")}</FormLabel>
+										<FormLabel>Port</FormLabel>
 										<FormControl>
 											<Input
 												placeholder="22"
@@ -409,12 +411,36 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 							name="username"
 							render={({ field }) => (
 								<FormItem>
-									<FormLabel>{t("settings.terminal.username")}</FormLabel>
+									<FormLabel>Username</FormLabel>
 									<FormControl>
 										<Input placeholder="root" {...field} />
 									</FormControl>
-
+									<FormDescription>
+										Use &quot;root&quot; or a non-root user with passwordless
+										sudo access.
+									</FormDescription>
 									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={form.control}
+							name="enableDockerCleanup"
+							render={({ field }) => (
+								<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
+									<div className="space-y-0.5">
+										<FormLabel>Enable Docker Cleanup</FormLabel>
+										<FormDescription>
+											Automatically prune unused Docker images daily. Keeps disk
+											usage in check on this remote server.
+										</FormDescription>
+									</div>
+									<FormControl>
+										<Switch
+											checked={field.value}
+											onCheckedChange={field.onChange}
+										/>
+									</FormControl>
 								</FormItem>
 							)}
 						/>
@@ -422,7 +448,7 @@ export const HandleServers = ({ serverId, asButton = false }: Props) => {
 
 					<DialogFooter>
 						<Button
-							isLoading={isLoading}
+							isLoading={isPending}
 							disabled={!canCreateMoreServers && !serverId}
 							form="hook-form-add-server"
 							type="submit"

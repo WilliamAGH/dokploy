@@ -4,13 +4,14 @@ import type { NextPage } from "next";
 import type { AppProps } from "next/app";
 import { Inter } from "next/font/google";
 import Head from "next/head";
-import { appWithTranslation } from "next-i18next";
 import { ThemeProvider } from "next-themes";
 import NextTopLoader from "nextjs-toploader";
 import type { ReactElement, ReactNode } from "react";
 import { SearchCommand } from "@/components/dashboard/search-command";
+import { WhitelabelingProvider } from "@/components/proprietary/whitelabeling/whitelabeling-provider";
+import { Analytics } from "@/components/shared/analytics";
 import { Toaster } from "@/components/ui/sonner";
-import { Languages } from "@/lib/languages";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { api } from "@/utils/api";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -42,30 +43,24 @@ const MyApp = ({
 			<Head>
 				<title>Dokploy</title>
 			</Head>
-			<ThemeProvider
-				attribute="class"
-				defaultTheme="system"
-				enableSystem
-				disableTransitionOnChange
-				forcedTheme={Component.theme}
-			>
-				<NextTopLoader color="hsl(var(--sidebar-ring))" />
-				<Toaster richColors />
-				<SearchCommand />
-				{getLayout(<Component {...pageProps} />)}
-			</ThemeProvider>
+			<TooltipProvider>
+				<ThemeProvider
+					attribute="class"
+					defaultTheme="system"
+					enableSystem
+					disableTransitionOnChange
+					forcedTheme={Component.theme}
+				>
+					<NextTopLoader color="hsl(var(--sidebar-ring))" />
+					<WhitelabelingProvider />
+					<Analytics />
+					<Toaster richColors />
+					<SearchCommand />
+					{getLayout(<Component {...pageProps} />)}
+				</ThemeProvider>
+			</TooltipProvider>
 		</>
 	);
 };
 
-export default api.withTRPC(
-	appWithTranslation(MyApp, {
-		i18n: {
-			defaultLocale: "en",
-			locales: Object.values(Languages).map((language) => language.code),
-			localeDetection: false,
-		},
-		fallbackLng: "en",
-		keySeparator: false,
-	}),
-);
+export default api.withTRPC(MyApp);

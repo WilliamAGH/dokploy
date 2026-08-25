@@ -1,4 +1,4 @@
-import { zodResolver } from "@hookform/resolvers/zod";
+import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -195,9 +195,7 @@ export const CreateServer = ({ stepper }: Props) => {
 														{sshKey.name}
 													</SelectItem>
 												))}
-												<SelectLabel>
-													Registries ({sshKeys?.length})
-												</SelectLabel>
+												<SelectLabel>SSH Keys ({sshKeys?.length})</SelectLabel>
 											</SelectGroup>
 										</SelectContent>
 									</Select>

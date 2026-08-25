@@ -9,7 +9,12 @@ import { publicIpv4, publicIpv6 } from "public-ip";
 import { Client, type ConnectConfig } from "ssh2";
 import { WebSocketServer } from "ws";
 import { getDockerHost } from "../utils/docker";
-import { setupLocalServerSSHKey } from "./utils";
+import { canAccessTerminalOverWss } from "./authorize";
+import {
+	parseResizeMessage,
+	parseTerminalSize,
+	setupLocalServerSSHKey,
+} from "./utils";
 
 const COMMAND_TO_ALLOW_LOCAL_ACCESS = `
 # ----------------------------------------
@@ -87,9 +92,18 @@ export const setupTerminalWebSocketServer = (
 	wssTerm.on("connection", async (ws, req) => {
 		const url = new URL(req.url || "", `http://${req.headers.host}`);
 		const serverId = url.searchParams.get("serverId");
+		const { cols, rows } = parseTerminalSize(
+			url.searchParams.get("cols"),
+			url.searchParams.get("rows"),
+		);
 		const { user, session } = await validateRequest(req);
 		if (!user || !session || !serverId) {
 			ws.close();
+			return;
+		}
+
+		if (!(await canAccessTerminalOverWss(user, session, serverId))) {
+			ws.close(4003, "Not authorized");
 			return;
 		}
 
@@ -97,7 +111,12 @@ export const setupTerminalWebSocketServer = (
 
 		const isLocalServer = serverId === "local";
 
-		if (isLocalServer && !IS_CLOUD) {
+		if (isLocalServer) {
+			if (IS_CLOUD) {
+				ws.send("This feature is not available in the cloud version.");
+				ws.close();
+				return;
+			}
 			const port = Number(url.searchParams.get("port"));
 			const username = url.searchParams.get("username");
 
@@ -149,6 +168,11 @@ export const setupTerminalWebSocketServer = (
 				return;
 			}
 
+			if (server.organizationId !== session.activeOrganizationId) {
+				ws.close();
+				return;
+			}
+
 			const { ipAddress: host, port, username, sshKey, sshKeyId } = server;
 
 			if (!sshKeyId) {
@@ -174,7 +198,7 @@ export const setupTerminalWebSocketServer = (
 				// Clear terminal content once connected
 				ws.send("\x1bc");
 
-				conn.shell({}, (err, stream) => {
+				conn.shell({ cols, rows }, (err, stream) => {
 					if (err) throw err;
 
 					stream
@@ -200,7 +224,13 @@ export const setupTerminalWebSocketServer = (
 							} else {
 								command = message;
 							}
-							stream.write(command.toString());
+							const text = command.toString();
+							const resize = parseResizeMessage(text);
+							if (resize) {
+								stream.setWindow(resize.rows, resize.cols, 0, 0);
+								return;
+							}
+							stream.write(text);
 						} catch (error) {
 							// @ts-ignore
 							const errorMessage = error?.message as unknown as string;

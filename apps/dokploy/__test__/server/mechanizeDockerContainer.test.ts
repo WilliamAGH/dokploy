@@ -6,6 +6,7 @@ type MockCreateServiceOptions = {
 	TaskTemplate?: {
 		ContainerSpec?: {
 			StopGracePeriod?: number;
+			Ulimits?: Array<{ Name: string; Soft: number; Hard: number }>;
 		};
 	};
 	[key: string]: unknown;
@@ -13,11 +14,11 @@ type MockCreateServiceOptions = {
 
 const { inspectMock, getServiceMock, createServiceMock, getRemoteDockerMock } =
 	vi.hoisted(() => {
-		const inspect = vi.fn<[], Promise<never>>();
+		const inspect = vi.fn<() => Promise<never>>();
 		const getService = vi.fn(() => ({ inspect }));
-		const createService = vi.fn<[MockCreateServiceOptions], Promise<void>>(
-			async () => undefined,
-		);
+		const createService = vi.fn<
+			(opts: MockCreateServiceOptions) => Promise<void>
+		>(async () => undefined);
 		const getRemoteDocker = vi.fn(async () => ({
 			getService,
 			createService,
@@ -56,7 +57,8 @@ const createApplication = (
 			env: null,
 		},
 		replicas: 1,
-		stopGracePeriodSwarm: 0n,
+		stopGracePeriodSwarm: 0,
+		ulimitsSwarm: null,
 		serverId: "server-id",
 		...overrides,
 	}) as unknown as ApplicationNested;
@@ -74,13 +76,15 @@ describe("mechanizeDockerContainer", () => {
 		});
 	});
 
-	it("converts bigint stopGracePeriodSwarm to a number and keeps zero values", async () => {
-		const application = createApplication({ stopGracePeriodSwarm: 0n });
+	it("passes stopGracePeriodSwarm as a number and keeps zero values", async () => {
+		const application = createApplication({ stopGracePeriodSwarm: 0 });
 
 		await mechanizeDockerContainer(application);
 
 		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0];
+		const call = createServiceMock.mock.calls[0] as
+			| [MockCreateServiceOptions]
+			| undefined;
 		if (!call) {
 			throw new Error("createServiceMock should have been called once");
 		}
@@ -97,7 +101,9 @@ describe("mechanizeDockerContainer", () => {
 		await mechanizeDockerContainer(application);
 
 		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0];
+		const call = createServiceMock.mock.calls[0] as
+			| [MockCreateServiceOptions]
+			| undefined;
 		if (!call) {
 			throw new Error("createServiceMock should have been called once");
 		}
@@ -105,5 +111,51 @@ describe("mechanizeDockerContainer", () => {
 		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty(
 			"StopGracePeriod",
 		);
+	});
+
+	it("passes ulimits to ContainerSpec when ulimitsSwarm is defined", async () => {
+		const ulimits = [
+			{ Name: "nofile", Soft: 10000, Hard: 20000 },
+			{ Name: "nproc", Soft: 4096, Hard: 8192 },
+		];
+		const application = createApplication({ ulimitsSwarm: ulimits });
+
+		await mechanizeDockerContainer(application);
+
+		expect(createServiceMock).toHaveBeenCalledTimes(1);
+		const call = createServiceMock.mock.calls[0];
+		if (!call) {
+			throw new Error("createServiceMock should have been called once");
+		}
+		const [settings] = call;
+		expect(settings.TaskTemplate?.ContainerSpec?.Ulimits).toEqual(ulimits);
+	});
+
+	it("omits Ulimits when ulimitsSwarm is null", async () => {
+		const application = createApplication({ ulimitsSwarm: null });
+
+		await mechanizeDockerContainer(application);
+
+		expect(createServiceMock).toHaveBeenCalledTimes(1);
+		const call = createServiceMock.mock.calls[0];
+		if (!call) {
+			throw new Error("createServiceMock should have been called once");
+		}
+		const [settings] = call;
+		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty("Ulimits");
+	});
+
+	it("omits Ulimits when ulimitsSwarm is an empty array", async () => {
+		const application = createApplication({ ulimitsSwarm: [] });
+
+		await mechanizeDockerContainer(application);
+
+		expect(createServiceMock).toHaveBeenCalledTimes(1);
+		const call = createServiceMock.mock.calls[0];
+		if (!call) {
+			throw new Error("createServiceMock should have been called once");
+		}
+		const [settings] = call;
+		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty("Ulimits");
 	});
 });

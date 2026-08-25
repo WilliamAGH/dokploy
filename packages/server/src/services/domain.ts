@@ -1,26 +1,27 @@
 import dns from "node:dns";
 import { promisify } from "node:util";
 import { db } from "@dokploy/server/db";
+import { getWebServerSettings } from "@dokploy/server/services/web-server-settings";
 import { generateRandomDomain } from "@dokploy/server/templates";
 import { manageDomain } from "@dokploy/server/utils/traefik/domain";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
+import type { z } from "zod";
 import { type apiCreateDomain, domains } from "../db/schema";
-import { findUserById } from "./admin";
 import { findApplicationById } from "./application";
 import { detectCDNProvider } from "./cdn";
 import { findServerById } from "./server";
 
 export type Domain = typeof domains.$inferSelect;
 
-export const createDomain = async (input: typeof apiCreateDomain._type) => {
+export const createDomain = async (input: z.infer<typeof apiCreateDomain>) => {
 	const result = await db.transaction(async (tx) => {
 		const domain = await tx
 			.insert(domains)
 			.values({
 				...input,
 				host: input.host?.trim(),
-			})
+			} as typeof domains.$inferInsert)
 			.returning()
 			.then((response) => response[0]);
 
@@ -44,7 +45,7 @@ export const createDomain = async (input: typeof apiCreateDomain._type) => {
 
 export const generateTraefikMeDomain = async (
 	appName: string,
-	userId: string,
+	_userId: string,
 	serverId?: string,
 ) => {
 	if (serverId) {
@@ -61,9 +62,9 @@ export const generateTraefikMeDomain = async (
 			projectName: appName,
 		});
 	}
-	const admin = await findUserById(userId);
+	const settings = await getWebServerSettings();
 	return generateRandomDomain({
-		serverIp: admin?.serverIp || "",
+		serverIp: settings?.serverIp || "",
 		projectName: appName,
 	});
 };
@@ -79,7 +80,9 @@ export const findDomainById = async (domainId: string) => {
 	const domain = await db.query.domains.findFirst({
 		where: eq(domains.domainId, domainId),
 		with: {
-			application: true,
+			application: {
+				columns: { applicationId: true, appName: true, name: true },
+			},
 		},
 	});
 	if (!domain) {
@@ -95,7 +98,9 @@ export const findDomainsByApplicationId = async (applicationId: string) => {
 	const domainsArray = await db.query.domains.findMany({
 		where: eq(domains.applicationId, applicationId),
 		with: {
-			application: true,
+			application: {
+				columns: { applicationId: true, appName: true, name: true },
+			},
 		},
 	});
 
@@ -106,7 +111,9 @@ export const findDomainsByComposeId = async (composeId: string) => {
 	const domainsArray = await db.query.domains.findMany({
 		where: eq(domains.composeId, composeId),
 		with: {
-			compose: true,
+			compose: {
+				columns: { composeId: true, appName: true, name: true },
+			},
 		},
 	});
 

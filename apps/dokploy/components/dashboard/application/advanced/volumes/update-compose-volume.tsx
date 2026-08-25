@@ -26,28 +26,26 @@ export const UpdateComposeVolume = ({ composeId, volume, refetch }: Props) => {
 	const [source, setSource] = useState(volume.source);
 	const [target, setTarget] = useState(volume.target);
 
-	const { mutateAsync: removeVolume } =
-		api.compose.removeComposeVolume.useMutation();
-	const { mutateAsync: addVolume, isLoading } =
-		api.compose.addComposeVolume.useMutation();
+	const { mutateAsync: updateVolume, isPending } =
+		api.compose.updateComposeVolume.useMutation();
 
 	const onSubmit = async () => {
 		if (!source.trim() || !target.trim()) {
 			toast.error("Source and target are required");
 			return;
 		}
-		const original = { source: volume.source, target: volume.target };
 		try {
-			await removeVolume({ composeId, serviceName: volume.serviceName, target: volume.target });
-			await addVolume({ composeId, serviceName: volume.serviceName, source, target });
+			await updateVolume({
+				composeId,
+				serviceName: volume.serviceName,
+				originalTarget: volume.target,
+				source,
+				target,
+			});
 			toast.success("Volume updated successfully");
 			setIsOpen(false);
 			refetch();
 		} catch {
-			// Attempt rollback if remove succeeded but add failed
-			try {
-				await addVolume({ composeId, serviceName: volume.serviceName, source: original.source, target: original.target });
-			} catch {}
 			toast.error("Error updating volume");
 		}
 	};
@@ -87,7 +85,11 @@ export const UpdateComposeVolume = ({ composeId, volume, refetch }: Props) => {
 					</div>
 				</div>
 				<DialogFooter>
-					<Button onClick={onSubmit} isLoading={isLoading} disabled={!source.trim() || !target.trim()}>
+					<Button
+						onClick={onSubmit}
+						isLoading={isPending}
+						disabled={!source.trim() || !target.trim()}
+					>
 						Update
 					</Button>
 				</DialogFooter>

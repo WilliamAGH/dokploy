@@ -1,6 +1,10 @@
+import fs from "node:fs";
+import path from "node:path";
 import { paths } from "@dokploy/server/constants";
-import { findOwner } from "@dokploy/server/services/admin";
-import { updateUser } from "@dokploy/server/services/user";
+import {
+	getWebServerSettings,
+	updateWebServerSettings,
+} from "@dokploy/server/services/web-server-settings";
 import { scheduledJobs, scheduleJob } from "node-schedule";
 import { execAsync } from "../process/execAsync";
 
@@ -10,8 +14,6 @@ export const startLogCleanup = async (
 	cronExpression = "0 0 * * *",
 ): Promise<boolean> => {
 	try {
-		const { DYNAMIC_TRAEFIK_PATH } = paths();
-
 		const existingJob = scheduledJobs[LOG_CLEANUP_JOB_NAME];
 		if (existingJob) {
 			existingJob.cancel();
@@ -19,22 +21,38 @@ export const startLogCleanup = async (
 
 		scheduleJob(LOG_CLEANUP_JOB_NAME, cronExpression, async () => {
 			try {
+				const { DYNAMIC_TRAEFIK_PATH } = paths();
+				const accessLogPath = path.join(DYNAMIC_TRAEFIK_PATH, "access.log");
+
+				if (!fs.existsSync(accessLogPath)) {
+					console.error("Access log file does not exist");
+					return;
+				}
+
 				await execAsync(
-					`tail -n 1000 ${DYNAMIC_TRAEFIK_PATH}/access.log > ${DYNAMIC_TRAEFIK_PATH}/access.log.tmp && mv ${DYNAMIC_TRAEFIK_PATH}/access.log.tmp ${DYNAMIC_TRAEFIK_PATH}/access.log`,
+					`tail -n 1000 ${accessLogPath} > ${accessLogPath}.tmp && mv ${accessLogPath}.tmp ${accessLogPath}`,
 				);
 
-				await execAsync("docker exec dokploy-traefik kill -USR1 1");
+				// Traefik can run as a standalone container ("dokploy-traefik") or a
+				// swarm service task ("dokploy-traefik.1.<task-id>"), so resolve the
+				// running container id dynamically instead of assuming the name.
+				const { stdout: containerId } = await execAsync(
+					'docker ps -q --filter "name=dokploy-traefik" --filter "status=running" | head -n 1',
+				);
+				const traefikContainerId = containerId.trim();
+				if (!traefikContainerId) {
+					console.error("Traefik container not found, skipping log reopen");
+					return;
+				}
+				await execAsync(`docker exec ${traefikContainerId} kill -USR1 1`);
 			} catch (error) {
 				console.error("Error during log cleanup:", error);
 			}
 		});
 
-		const owner = await findOwner();
-		if (owner) {
-			await updateUser(owner.user.id, {
-				logCleanupCron: cronExpression,
-			});
-		}
+		await updateWebServerSettings({
+			logCleanupCron: cronExpression,
+		});
 
 		return true;
 	} catch (error) {
@@ -51,12 +69,9 @@ export const stopLogCleanup = async (): Promise<boolean> => {
 		}
 
 		// Update database
-		const owner = await findOwner();
-		if (owner) {
-			await updateUser(owner.user.id, {
-				logCleanupCron: null,
-			});
-		}
+		await updateWebServerSettings({
+			logCleanupCron: null,
+		});
 
 		return true;
 	} catch (error) {
@@ -69,8 +84,8 @@ export const getLogCleanupStatus = async (): Promise<{
 	enabled: boolean;
 	cronExpression: string | null;
 }> => {
-	const owner = await findOwner();
-	const cronExpression = owner?.user.logCleanupCron ?? null;
+	const settings = await getWebServerSettings();
+	const cronExpression = settings?.logCleanupCron ?? null;
 	return {
 		enabled: cronExpression !== null,
 		cronExpression,

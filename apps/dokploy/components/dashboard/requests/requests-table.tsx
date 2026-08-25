@@ -152,7 +152,15 @@ export const RequestsTable = ({ dateRange }: RequestsTableProps) => {
 			return JSON.stringify(value, null, 2);
 		}
 		if (key === "Duration" || key === "OriginDuration" || key === "Overhead") {
-			return `${value / 1000000000} s`;
+			const nanos = Number(value);
+			const ms = nanos / 1000000;
+			if (ms < 1) {
+				return `${(nanos / 1000).toFixed(2)} µs`;
+			}
+			if (ms < 1000) {
+				return `${ms.toFixed(2)} ms`;
+			}
+			return `${(ms / 1000).toFixed(2)} s`;
 		}
 		if (key === "level") {
 			return <Badge variant="secondary">{value}</Badge>;
@@ -161,7 +169,11 @@ export const RequestsTable = ({ dateRange }: RequestsTableProps) => {
 			return <Badge variant="outline">{value}</Badge>;
 		}
 		if (key === "DownstreamStatus" || key === "OriginStatus") {
-			return <Badge variant={getStatusColor(value)}>{value}</Badge>;
+			const num = Number(value);
+			if (num === 0) {
+				return <Badge variant="secondary">N/A</Badge>;
+			}
+			return <Badge variant={getStatusColor(num)}>{value}</Badge>;
 		}
 		return value;
 	};
@@ -173,7 +185,7 @@ export const RequestsTable = ({ dateRange }: RequestsTableProps) => {
 					<div className="flex flex-col gap-4  w-full overflow-auto">
 						<div className="flex items-center gap-2 max-sm:flex-wrap">
 							<Input
-								placeholder="Filter by name..."
+								placeholder="Filter by hostname..."
 								value={search}
 								onChange={(event) => setSearch(event.target.value)}
 								className="md:max-w-sm"
@@ -316,21 +328,21 @@ export const RequestsTable = ({ dateRange }: RequestsTableProps) => {
 				open={!!selectedRow}
 				onOpenChange={(_open) => setSelectedRow(undefined)}
 			>
-				<SheetContent className="sm:max-w-[740px]  flex flex-col">
+				<SheetContent className="w-full sm:max-w-[740px]! flex flex-col">
 					<SheetHeader>
 						<SheetTitle>Request log</SheetTitle>
 						<SheetDescription>
 							Details of the request log entry.
 						</SheetDescription>
 					</SheetHeader>
-					<ScrollArea className="flex-grow mt-4 pr-4">
+					<ScrollArea className="grow mt-4 pr-4">
 						<div className="border rounded-md">
 							<Table>
 								<TableBody>
 									{Object.entries(selectedRow || {}).map(([key, value]) => (
 										<TableRow key={key}>
 											<TableCell className="font-medium">{key}</TableCell>
-											<TableCell className="truncate break-words break-before-all whitespace-pre-wrap">
+											<TableCell className="truncate wrap-break-word break-before-all whitespace-pre-wrap">
 												{key === "RequestAddr" ? (
 													<div className="flex items-center gap-2 bg-muted p-1 rounded">
 														<span>{value}</span>

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import type http from "node:http";
-import { findServerById, validateRequest } from "@dokploy/server";
+import { findServerById, IS_CLOUD, validateRequest } from "@dokploy/server";
+import { encodeBase64 } from "@dokploy/server/utils/docker/utils";
+import { readValidDirectory } from "@dokploy/server/wss/utils";
 import { Client } from "ssh2";
 import { WebSocketServer } from "ws";
 
@@ -33,10 +35,14 @@ export const setupDeploymentLogsWebSocketServer = (
 
 		// Generate unique connection ID for tracking
 		const connectionId = `deployment-logs-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-
 		if (!logPath) {
 			console.log(`[${connectionId}] logPath no provided`);
 			ws.close(4000, "logPath no provided");
+			return;
+		}
+
+		if (!readValidDirectory(logPath, serverId)) {
+			ws.close(4000, "Invalid log path");
 			return;
 		}
 
@@ -52,6 +58,11 @@ export const setupDeploymentLogsWebSocketServer = (
 			if (serverId) {
 				const server = await findServerById(serverId);
 
+				if (server.organizationId !== session.activeOrganizationId) {
+					ws.close();
+					return;
+				}
+
 				if (!server.sshKeyId) {
 					ws.close();
 					return;
@@ -60,9 +71,9 @@ export const setupDeploymentLogsWebSocketServer = (
 				sshClient = new Client();
 				sshClient
 					.on("ready", () => {
-						const command = `
-						tail -n +1 -f ${logPath};
-					`;
+						const encodedPath = encodeBase64(logPath);
+						const command = `tail -n +1 -f "$(echo '${encodedPath}' | base64 -d)"`;
+
 						sshClient!.exec(command, (err, stream) => {
 							if (err) {
 								sshClient!.end();
@@ -108,6 +119,11 @@ export const setupDeploymentLogsWebSocketServer = (
 					}
 				});
 			} else {
+				if (IS_CLOUD) {
+					ws.send("This feature is not available in the cloud version.");
+					ws.close();
+					return;
+				}
 				tailProcess = spawn("tail", ["-n", "+1", "-f", logPath]);
 
 				const stdout = tailProcess.stdout;

@@ -12,11 +12,13 @@ import { pullImage } from "@dokploy/server/utils/docker/utils";
 import { execAsyncRemote } from "@dokploy/server/utils/process/execAsync";
 import { TRPCError } from "@trpc/server";
 import { eq, getTableColumns } from "drizzle-orm";
+import { quote } from "shell-quote";
+import type { z } from "zod";
 import { validUniqueServerAppName } from "./project";
 
 export type Mongo = typeof mongo.$inferSelect;
 
-export const createMongo = async (input: typeof apiCreateMongo._type) => {
+export const createMongo = async (input: z.infer<typeof apiCreateMongo>) => {
 	const appName = buildAppName("mongo", input.appName);
 
 	const valid = await validUniqueServerAppName(appName);
@@ -62,7 +64,12 @@ export const findMongoById = async (mongoId: string) => {
 			server: true,
 			backups: {
 				with: {
-					destination: true,
+					destination: {
+						columns: {
+							accessKey: false,
+							secretAccessKey: false,
+						},
+					},
 					deployments: true,
 				},
 			},
@@ -154,7 +161,7 @@ export const deployMongo = async (
 		if (mongo.serverId) {
 			await execAsyncRemote(
 				mongo.serverId,
-				`docker pull ${mongo.dockerImage}`,
+				`docker pull ${quote([mongo.dockerImage])}`,
 				onData,
 			);
 		} else {

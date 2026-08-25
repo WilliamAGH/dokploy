@@ -4,18 +4,14 @@ import {
 	Key,
 	KeyIcon,
 	Loader2,
-	MoreHorizontal,
 	Network,
-	Pencil,
 	ServerIcon,
-	Settings,
 	Terminal,
 	Trash2,
 	User,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/router";
-import { useTranslation } from "next-i18next";
 import { toast } from "sonner";
 import { AlertBlock } from "@/components/shared/alert-block";
 import { DialogAction } from "@/components/shared/dialog-action";
@@ -29,46 +25,34 @@ import {
 	CardTitle,
 } from "@/components/ui/card";
 import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuLabel,
-	DropdownMenuSeparator,
-	DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import {
 	Tooltip,
 	TooltipContent,
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { api } from "@/utils/api";
-import { ShowNodesModal } from "../cluster/nodes/show-nodes-modal";
 import { TerminalModal } from "../web-server/terminal-modal";
 import { ShowServerActions } from "./actions/show-server-actions";
 import { HandleServers } from "./handle-servers";
 import { SetupServer } from "./setup-server";
-import { ShowDockerContainersModal } from "./show-docker-containers-modal";
+import { ShowHealthModal } from "./show-health-modal";
 import { ShowMonitoringModal } from "./show-monitoring-modal";
-import { ShowSchedulesModal } from "./show-schedules-modal";
-import { ShowSwarmOverviewModal } from "./show-swarm-overview-modal";
-import { ShowTraefikFileSystemModal } from "./show-traefik-file-system-modal";
-import { WelcomeSuscription } from "./welcome-stripe/welcome-suscription";
+import { WelcomeSubscription } from "./welcome-stripe/welcome-subscription";
 
 export const ShowServers = () => {
-	const { t } = useTranslation("settings");
 	const router = useRouter();
 	const query = router.query;
-	const { data, refetch, isLoading } = api.server.all.useQuery();
+	const { data, refetch, isPending } = api.server.all.useQuery();
 	const { mutateAsync } = api.server.remove.useMutation();
 	const { data: sshKeys } = api.sshKey.all.useQuery();
 	const { data: isCloud } = api.settings.isCloud.useQuery();
 	const { data: canCreateMoreServers } =
 		api.stripe.canCreateMoreServers.useQuery();
+	const { data: permissions } = api.user.getPermissions.useQuery();
 
 	return (
 		<div className="w-full">
-			{query?.success && isCloud && <WelcomeSuscription />}
+			{query?.success && isCloud && <WelcomeSubscription />}
 			<Card className="h-full  p-2.5 rounded-xl  max-w-5xl mx-auto">
 				<div className="rounded-xl bg-background shadow-md ">
 					<CardHeader className="">
@@ -82,7 +66,7 @@ export const ShowServers = () => {
 
 						{isCloud && (
 							<span
-								className="bg-gradient-to-r cursor-pointer from-blue-600 via-green-500 to-indigo-400 inline-block text-transparent bg-clip-text text-sm"
+								className="bg-linear-to-r cursor-pointer from-blue-600 via-green-500 to-indigo-400 inline-block text-transparent bg-clip-text text-sm"
 								onClick={() => {
 									router.push("/dashboard/settings/servers?success=true");
 								}}
@@ -92,7 +76,7 @@ export const ShowServers = () => {
 						)}
 					</CardHeader>
 					<CardContent className="space-y-2 py-8 border-t">
-						{isLoading ? (
+						{isPending ? (
 							<div className="flex flex-row gap-2 items-center justify-center text-sm text-muted-foreground min-h-[25vh]">
 								<span>Loading...</span>
 								<Loader2 className="animate-spin size-4" />
@@ -121,7 +105,7 @@ export const ShowServers = () => {
 													Start adding servers to deploy your applications
 													remotely.
 												</span>
-												<HandleServers />
+												{permissions?.server.create && <HandleServers />}
 											</div>
 										) : (
 											<div className="flex flex-col gap-4 min-h-[25vh]">
@@ -136,59 +120,13 @@ export const ShowServers = () => {
 																className="relative hover:shadow-lg transition-shadow flex flex-col bg-transparent"
 															>
 																<CardHeader className="pb-3">
-																	<div className="flex items-start justify-between">
-																		<div className="flex items-center gap-2">
-																			<ServerIcon className="size-5 text-muted-foreground" />
-																			<CardTitle className="text-lg">
+																	<div className="flex items-start justify-between gap-2">
+																		<div className="flex min-w-0 items-center gap-2">
+																			<ServerIcon className="size-5 shrink-0 text-muted-foreground" />
+																			<CardTitle className="text-lg wrap-break-word min-w-0">
 																				{server.name}
 																			</CardTitle>
 																		</div>
-																		{isActive &&
-																			server.sshKeyId &&
-																			!isBuildServer && (
-																				<DropdownMenu>
-																					<DropdownMenuTrigger asChild>
-																						<Button
-																							variant="ghost"
-																							className="h-8 w-8 p-0"
-																						>
-																							<span className="sr-only">
-																								More options
-																							</span>
-																							<MoreHorizontal className="h-4 w-4" />
-																						</Button>
-																					</DropdownMenuTrigger>
-																					<DropdownMenuContent align="end">
-																						<DropdownMenuLabel>
-																							Advanced
-																						</DropdownMenuLabel>
-																						<ShowTraefikFileSystemModal
-																							serverId={server.serverId}
-																						/>
-																						<ShowDockerContainersModal
-																							serverId={server.serverId}
-																						/>
-																						{isCloud && (
-																							<ShowMonitoringModal
-																								url={`http://${server.ipAddress}:${server?.metricsConfig?.server?.port}/metrics`}
-																								token={
-																									server?.metricsConfig?.server
-																										?.token
-																								}
-																							/>
-																						)}
-																						<ShowSwarmOverviewModal
-																							serverId={server.serverId}
-																						/>
-																						<ShowNodesModal
-																							serverId={server.serverId}
-																						/>
-																						<ShowSchedulesModal
-																							serverId={server.serverId}
-																						/>
-																					</DropdownMenuContent>
-																				</DropdownMenu>
-																			)}
 																	</div>
 																	<TooltipProvider>
 																		<div className="flex gap-2 mt-2 flex-wrap">
@@ -285,7 +223,32 @@ export const ShowServers = () => {
 
 																	{/* Compact Actions */}
 																	{isActive && (
-																		<div className="flex items-center gap-2 pt-3 border-t mt-auto">
+																		<div className="flex items-center  gap-2 pt-3 border-t mt-auto flex-wrap">
+																			<div className="flex items-center gap-2 w-full">
+																				<Tooltip>
+																					<TooltipTrigger asChild>
+																						<SetupServer
+																							serverId={server.serverId}
+																						/>
+																					</TooltipTrigger>
+																					<TooltipContent
+																						className="max-w-xs"
+																						side="bottom"
+																					>
+																						<div className="space-y-1">
+																							<p className="font-semibold">
+																								Setup Server
+																							</p>
+																							<p className="text-xs text-muted-foreground">
+																								Configure and initialize your
+																								server with Docker, Traefik, and
+																								other essential services
+																							</p>
+																						</div>
+																					</TooltipContent>
+																				</Tooltip>
+																			</div>
+
 																			<TooltipProvider>
 																				{server.sshKeyId && (
 																					<Tooltip>
@@ -310,20 +273,6 @@ export const ShowServers = () => {
 																						</TooltipContent>
 																					</Tooltip>
 																				)}
-
-																				<Tooltip>
-																					<TooltipTrigger asChild>
-																						<div>
-																							<SetupServer
-																								serverId={server.serverId}
-																								asButton={true}
-																							/>
-																						</div>
-																					</TooltipTrigger>
-																					<TooltipContent>
-																						<p>Setup Server</p>
-																					</TooltipContent>
-																				</Tooltip>
 
 																				<Tooltip>
 																					<TooltipTrigger asChild>
@@ -355,68 +304,112 @@ export const ShowServers = () => {
 																					</Tooltip>
 																				)}
 
+																				{isCloud &&
+																					server.sshKeyId &&
+																					!isBuildServer && (
+																						<Tooltip>
+																							<TooltipTrigger asChild>
+																								<div>
+																									<ShowMonitoringModal
+																										url={`http://${server.ipAddress}:${server?.metricsConfig?.server?.port}/metrics`}
+																										token={
+																											server?.metricsConfig
+																												?.server?.token
+																										}
+																									/>
+																								</div>
+																							</TooltipTrigger>
+																							<TooltipContent>
+																								<p>Monitoring</p>
+																							</TooltipContent>
+																						</Tooltip>
+																					)}
+
+																				{permissions?.docker.read &&
+																					permissions?.server.read &&
+																					server.sshKeyId &&
+																					!isBuildServer && (
+																						<Tooltip>
+																							<TooltipTrigger asChild>
+																								<div>
+																									<ShowHealthModal
+																										serverId={server.serverId}
+																									/>
+																								</div>
+																							</TooltipTrigger>
+																							<TooltipContent>
+																								<p>Health</p>
+																							</TooltipContent>
+																						</Tooltip>
+																					)}
+
 																				<div className="flex-1" />
 
-																				<Tooltip>
-																					<TooltipTrigger asChild>
-																						<div>
-																							<DialogAction
-																								disabled={!canDelete}
-																								title={
-																									canDelete
-																										? "Delete Server"
-																										: "Server has active services"
-																								}
-																								description={
-																									canDelete ? (
-																										"This will delete the server and all associated data"
-																									) : (
-																										<div className="flex flex-col gap-2">
-																											You can not delete this
-																											server because it has
-																											active services.
-																											<AlertBlock type="warning">
-																												You have active services
-																												associated with this
-																												server, please delete
-																												them first.
-																											</AlertBlock>
-																										</div>
-																									)
-																								}
-																								onClick={async () => {
-																									await mutateAsync({
-																										serverId: server.serverId,
-																									})
-																										.then(() => {
-																											refetch();
-																											toast.success(
-																												`Server ${server.name} deleted successfully`,
-																											);
+																				{permissions?.server.delete && (
+																					<Tooltip>
+																						<TooltipTrigger asChild>
+																							<div>
+																								<DialogAction
+																									disabled={!canDelete}
+																									title={
+																										canDelete
+																											? "Delete Server"
+																											: "Server has active services"
+																									}
+																									description={
+																										canDelete ? (
+																											"This will delete the server and all associated data"
+																										) : (
+																											<div className="flex flex-col gap-2">
+																												You can not delete this
+																												server because it has
+																												active services.
+																												<AlertBlock type="warning">
+																													You have active
+																													services associated
+																													with this server,
+																													please delete them
+																													first.
+																												</AlertBlock>
+																											</div>
+																										)
+																									}
+																									onClick={async () => {
+																										await mutateAsync({
+																											serverId: server.serverId,
 																										})
-																										.catch((err) => {
-																											toast.error(err.message);
-																										});
-																								}}
-																							>
-																								<Button
-																									variant="ghost"
-																									size="icon"
-																									className={`h-9 w-9 ${canDelete ? "text-destructive hover:text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:bg-muted"}`}
+																											.then(() => {
+																												refetch();
+																												toast.success(
+																													`Server ${server.name} deleted successfully`,
+																												);
+																											})
+																											.catch((err) => {
+																												toast.error(
+																													err.message,
+																												);
+																											});
+																									}}
 																								>
-																									<Trash2 className="h-4 w-4" />
-																								</Button>
-																							</DialogAction>
-																						</div>
-																					</TooltipTrigger>
-																					<TooltipContent>
-																						<p>
-																							{canDelete
-																								? "Delete Server"
-																								: "Cannot delete - has active services"}
-																						</p>
-																					</TooltipContent>
-																				</Tooltip>
+																									<Button
+																										variant="ghost"
+																										size="icon"
+																										className={`h-9 w-9 ${canDelete ? "text-destructive hover:text-destructive hover:bg-destructive/10" : "text-muted-foreground hover:bg-muted"}`}
+																									>
+																										<Trash2 className="h-4 w-4" />
+																									</Button>
+																								</DialogAction>
+																							</div>
+																						</TooltipTrigger>
+																						<TooltipContent>
+																							<p>
+																								{canDelete
+																									? "Delete Server"
+																									: "Cannot delete - has active services"}
+																							</p>
+																						</TooltipContent>
+																					</Tooltip>
+																				)}
 																			</TooltipProvider>
 																		</div>
 																	)}
@@ -426,13 +419,15 @@ export const ShowServers = () => {
 													})}
 												</div>
 
-												<div className="flex flex-row gap-2 flex-wrap w-full justify-end mt-4">
-													{data && data?.length > 0 && (
-														<div>
-															<HandleServers />
-														</div>
-													)}
-												</div>
+												{permissions?.server.create && (
+													<div className="flex flex-row gap-2 flex-wrap w-full justify-end mt-4">
+														{data && data?.length > 0 && (
+															<div>
+																<HandleServers />
+															</div>
+														)}
+													</div>
+												)}
 											</div>
 										)}
 									</>
