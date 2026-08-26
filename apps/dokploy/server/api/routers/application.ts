@@ -338,26 +338,57 @@ export const applicationRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				deployment: ["create"],
 			});
-			const service = await findApplicationById(input.applicationId);
-			const scale = (replicas: number) => {
-				if (service.serverId) {
-					return scaleServiceRemote(
-						service.serverId,
-						service.appName,
-						replicas,
-					);
-				}
-				return scaleService(service.appName, replicas);
-			};
-			await scale(input.replicas);
-			try {
-				await updateApplication(service.applicationId, {
-					replicas: input.replicas,
+			let restoreRuntime: (() => Promise<void>) | undefined;
+			const service = await db
+				.transaction(async (tx) => {
+					const [application] = await tx
+						.select({
+							applicationId: applications.applicationId,
+							appName: applications.appName,
+							serverId: applications.serverId,
+							replicas: applications.replicas,
+						})
+						.from(applications)
+						.where(eq(applications.applicationId, input.applicationId))
+						.for("update");
+					if (!application) {
+						throw new TRPCError({
+							code: "NOT_FOUND",
+							message: "Application not found",
+						});
+					}
+					const scale = (replicas: number) => {
+						if (application.serverId) {
+							return scaleServiceRemote(
+								application.serverId,
+								application.appName,
+								replicas,
+							);
+						}
+						return scaleService(application.appName, replicas);
+					};
+					restoreRuntime = () => scale(application.replicas);
+					await scale(input.replicas);
+					await tx
+						.update(applications)
+						.set({ replicas: input.replicas })
+						.where(eq(applications.applicationId, application.applicationId));
+					return application;
+				})
+				.catch(async (error) => {
+					if (!restoreRuntime) {
+						throw error;
+					}
+					try {
+						await restoreRuntime();
+					} catch (compensationError) {
+						throw new AggregateError(
+							[error, compensationError],
+							"Application scale and runtime recovery failed",
+						);
+					}
+					throw error;
 				});
-			} catch (error) {
-				await scale(service.replicas);
-				throw error;
-			}
 			await audit(ctx, {
 				action: "update",
 				resourceType: "application",
