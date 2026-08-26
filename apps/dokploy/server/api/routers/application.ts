@@ -20,6 +20,8 @@ import {
 	removePreviewDeployment,
 	removeService,
 	removeTraefikConfig,
+	scaleService,
+	scaleServiceRemote,
 	startService,
 	startServiceRemote,
 	stopService,
@@ -65,6 +67,7 @@ import {
 	apiSaveGithubProvider,
 	apiSaveGitlabProvider,
 	apiSaveGitProvider,
+	apiScaleApplication,
 	apiUpdateApplication,
 	applications,
 	environments,
@@ -327,6 +330,41 @@ export const applicationRouter = createTRPCRouter({
 				resourceName: service.appName,
 			});
 			return service;
+		}),
+
+	scale: protectedProcedure
+		.input(apiScaleApplication)
+		.mutation(async ({ input, ctx }) => {
+			await checkServicePermissionAndAccess(ctx, input.applicationId, {
+				deployment: ["create"],
+			});
+			const service = await findApplicationById(input.applicationId);
+			const scale = (replicas: number) => {
+				if (service.serverId) {
+					return scaleServiceRemote(
+						service.serverId,
+						service.appName,
+						replicas,
+					);
+				}
+				return scaleService(service.appName, replicas);
+			};
+			await scale(input.replicas);
+			try {
+				await updateApplication(service.applicationId, {
+					replicas: input.replicas,
+				});
+			} catch (error) {
+				await scale(service.replicas);
+				throw error;
+			}
+			await audit(ctx, {
+				action: "update",
+				resourceType: "application",
+				resourceId: service.applicationId,
+				resourceName: service.appName,
+			});
+			return { applicationId: service.applicationId, replicas: input.replicas };
 		}),
 
 	redeploy: protectedProcedure
