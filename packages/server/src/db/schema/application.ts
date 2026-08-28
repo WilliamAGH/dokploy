@@ -405,6 +405,10 @@ export const apiFindOneApplication = z.object({
 	applicationId: z.string().min(1),
 });
 
+export const apiScaleApplication = apiFindOneApplication.extend({
+	replicas: z.number().int().positive(),
+});
+
 export const apiDeployApplication = createSchema
 	.pick({
 		applicationId: true,

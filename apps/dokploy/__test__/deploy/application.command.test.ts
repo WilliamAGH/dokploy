@@ -9,11 +9,22 @@ import {
 import * as deploymentService from "@dokploy/server/services/deployment";
 import * as githubService from "@dokploy/server/services/github";
 import * as previewDeploymentService from "@dokploy/server/services/preview-deployment";
+import * as permissionService from "@dokploy/server/services/permission";
 import * as builders from "@dokploy/server/utils/builders";
+import {
+	scaleService,
+	scaleServiceRemote,
+	startService,
+	startServiceRemote,
+	stopService,
+	stopServiceRemote,
+} from "@dokploy/server/utils/docker/utils";
 import * as notifications from "@dokploy/server/utils/notifications/build-success";
 import * as execProcess from "@dokploy/server/utils/process/execAsync";
 import * as gitProvider from "@dokploy/server/utils/providers/git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { applicationRouter } from "@/server/api/routers/application";
+import { apiScaleApplication } from "@/server/db/schema";
 
 vi.mock("@dokploy/server/db", () => {
 	const createChainableMock = (): any => {
@@ -35,6 +46,7 @@ vi.mock("@dokploy/server/db", () => {
 			select: vi.fn(() => createChainableMock()),
 			insert: vi.fn(),
 			update: vi.fn(() => createChainableMock()),
+			transaction: vi.fn(),
 			delete: vi.fn(),
 			query: {
 				applications: {
@@ -45,6 +57,9 @@ vi.mock("@dokploy/server/db", () => {
 				},
 				member: {
 					findMany: vi.fn().mockResolvedValue([]),
+				},
+				webServerSettings: {
+					findFirst: vi.fn().mockResolvedValue({}),
 				},
 			},
 		},
@@ -62,9 +77,25 @@ vi.mock("@dokploy/server/services/application", async () => {
 	};
 });
 
-vi.mock("@dokploy/server/services/admin", () => ({
-	getDokployUrl: vi.fn(),
-}));
+vi.mock("@dokploy/server/services/permission", async () => {
+	const actual = await vi.importActual<
+		typeof import("@dokploy/server/services/permission")
+	>("@dokploy/server/services/permission");
+	return {
+		...actual,
+		checkServicePermissionAndAccess: vi.fn(),
+	};
+});
+
+vi.mock("@dokploy/server/services/admin", async () => {
+	const actual = await vi.importActual<
+		typeof import("@dokploy/server/services/admin")
+	>("@dokploy/server/services/admin");
+	return {
+		...actual,
+		getDokployUrl: vi.fn(),
+	};
+});
 
 vi.mock("@dokploy/server/services/deployment", () => ({
 	createDeployment: vi.fn(),
@@ -99,9 +130,19 @@ vi.mock("@dokploy/server/utils/providers/github", () => ({
 	cloneGithubRepository: vi.fn(),
 }));
 
-vi.mock("@dokploy/server/utils/process/execAsync", () => ({
-	execAsync: vi.fn(),
-	ExecError: class ExecError extends Error {},
+vi.mock("@dokploy/server/utils/process/execAsync", async () => {
+	const actual = await vi.importActual<
+		typeof import("@dokploy/server/utils/process/execAsync")
+	>("@dokploy/server/utils/process/execAsync");
+	return {
+		...actual,
+		execAsync: vi.fn(),
+		execAsyncRemote: vi.fn(),
+	};
+});
+
+vi.mock("@/server/api/utils/audit", () => ({
+	audit: vi.fn(),
 }));
 
 vi.mock("@dokploy/server/utils/builders", async () => {
@@ -177,6 +218,23 @@ const createMockPreviewDeployment = () => ({
 	pullRequestCommentId: "123",
 	pullRequestNumber: "42",
 });
+
+const lockedApplicationQuery = (application: () => unknown[]) => {
+	const query = {
+		from: vi.fn(() => query),
+		where: vi.fn(() => query),
+		for: vi.fn(async () => application()),
+	};
+	return query;
+};
+
+const updateApplicationQuery = () => {
+	const query = {
+		set: vi.fn((_applicationData: { replicas: number }) => query),
+		where: vi.fn().mockResolvedValue(undefined),
+	};
+	return query;
+};
 
 describe("deployApplication - Command Generation Tests", () => {
 	beforeEach(() => {
@@ -515,5 +573,219 @@ describe("deployApplication - Command Generation Tests", () => {
 			expect.objectContaining({ appName: "preview-test-app" }),
 			sourceRevision,
 		);
+	});
+});
+
+describe("application scaling", () => {
+	const caller = () =>
+		applicationRouter.createCaller({
+			session: { activeOrganizationId: "org-id" },
+			user: {
+				id: "user-id",
+				email: "user@example.com",
+				role: "owner",
+			},
+		} as any);
+	const givenApplication = (overrides = {}) => {
+		const application = createMockApplication({ replicas: 2, ...overrides });
+		const updateQuery = updateApplicationQuery();
+		vi.mocked(db.select).mockReturnValue(
+			lockedApplicationQuery(() => [application]) as never,
+		);
+		vi.mocked(db.update).mockReturnValue(updateQuery as never);
+		return { application, updateQuery };
+	};
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.mocked(execProcess.execAsync).mockResolvedValue({
+			stdout: "",
+			stderr: "",
+		});
+		vi.mocked(execProcess.execAsyncRemote).mockResolvedValue({
+			stdout: "",
+			stderr: "",
+		});
+		vi.mocked(
+			permissionService.checkServicePermissionAndAccess,
+		).mockResolvedValue(undefined);
+		vi.mocked(db.transaction).mockImplementation(async (transaction) =>
+			transaction(db as never),
+		);
+	});
+
+	it("accepts only a nonempty application id and positive integer replicas", async () => {
+		expect(
+			apiScaleApplication.safeParse({
+				applicationId: "test-app-id",
+				replicas: 3,
+			}).success,
+		).toBe(true);
+
+		for (const replicas of [0, -1, 1.5]) {
+			expect(
+				apiScaleApplication.safeParse({
+					applicationId: "test-app-id",
+					replicas,
+				}).success,
+			).toBe(false);
+		}
+
+		expect(
+			apiScaleApplication.safeParse({ applicationId: "", replicas: 1 }).success,
+		).toBe(false);
+		await expect(
+			caller().scale({ applicationId: "test-app-id", replicas: 0 }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(
+			permissionService.checkServicePermissionAndAccess,
+		).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{ location: "local", serverId: null, replicas: 3 },
+		{ location: "remote", serverId: "server-id", replicas: 4 },
+	])(
+		"scales the $location service and persists the same replica count",
+		async ({ serverId, replicas }) => {
+			const { application, updateQuery } = givenApplication({ serverId });
+			const result = { applicationId: application.applicationId, replicas };
+
+			await expect(
+				caller().scale({ applicationId: application.applicationId, replicas }),
+			).resolves.toEqual(result);
+
+			if (serverId) {
+				expect(execProcess.execAsyncRemote).toHaveBeenCalledWith(
+					serverId,
+					`docker service scale test-app=${replicas} `,
+				);
+				expect(execProcess.execAsync).not.toHaveBeenCalled();
+			} else {
+				expect(execProcess.execAsync).toHaveBeenCalledWith(
+					`docker service scale test-app=${replicas} `,
+				);
+				expect(execProcess.execAsyncRemote).not.toHaveBeenCalled();
+			}
+			expect(updateQuery.set).toHaveBeenCalledWith({ replicas });
+		},
+	);
+
+	it("restores the prior runtime count when metadata persistence fails", async () => {
+		const { application, updateQuery } = givenApplication({ replicas: 2 });
+		updateQuery.where.mockRejectedValue(new Error("database unavailable"));
+
+		await expect(
+			caller().scale({ applicationId: application.applicationId, replicas: 1 }),
+		).rejects.toThrow("database unavailable");
+		expect(vi.mocked(execProcess.execAsync).mock.calls).toEqual([
+			["docker service scale test-app=1 "],
+			["docker service scale test-app=2 "],
+		]);
+	});
+
+	it("preserves the persistence and recovery failures", async () => {
+		const { application, updateQuery } = givenApplication({ replicas: 2 });
+		const persistenceError = new Error("database unavailable");
+		const recoveryError = new Error("recovery unavailable");
+		updateQuery.where.mockRejectedValue(persistenceError);
+		vi.mocked(execProcess.execAsync)
+			.mockResolvedValueOnce({ stdout: "", stderr: "" })
+			.mockRejectedValueOnce(recoveryError);
+
+		const error = await caller()
+			.scale({ applicationId: application.applicationId, replicas: 1 })
+			.catch((cause) => cause);
+
+		expect(error).toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+			cause: expect.any(AggregateError),
+		});
+		expect((error as { cause: AggregateError }).cause.errors).toEqual([
+			persistenceError,
+			recoveryError,
+		]);
+	});
+
+	it("serializes concurrent scales through the application lock", async () => {
+		const { application } = givenApplication({ replicas: 2 });
+		let storedReplicas = 2;
+		const lockQueries: ReturnType<typeof lockedApplicationQuery>[] = [];
+		vi.mocked(db.select).mockImplementation(() => {
+			const query = lockedApplicationQuery(() => [
+				{ ...application, replicas: storedReplicas },
+			]);
+			lockQueries.push(query);
+			return query as never;
+		});
+		const updateQuery = updateApplicationQuery();
+		updateQuery.set.mockImplementation(({ replicas }: { replicas: number }) => {
+			storedReplicas = replicas;
+			return updateQuery;
+		});
+		vi.mocked(db.update).mockReturnValue(updateQuery as never);
+		let pending: Promise<unknown> = Promise.resolve();
+		vi.mocked(db.transaction).mockImplementation((transaction) => {
+			const result = pending.then(() => transaction(db as never));
+			pending = result.catch(() => undefined);
+			return result as never;
+		});
+		let releaseFirstScale = () => {};
+		const firstScale = new Promise<void>((resolve) => {
+			releaseFirstScale = resolve;
+		});
+		let firstScaleStarted = () => {};
+		const firstScaleStartedPromise = new Promise<void>((resolve) => {
+			firstScaleStarted = resolve;
+		});
+		vi.mocked(execProcess.execAsync).mockImplementation(async (command) => {
+			if (command === "docker service scale test-app=3 ") {
+				firstScaleStarted();
+				await firstScale;
+			}
+			return { stdout: "", stderr: "" };
+		});
+
+		const first = caller().scale({
+			applicationId: application.applicationId,
+			replicas: 3,
+		});
+		await firstScaleStartedPromise;
+		const second = caller().scale({
+			applicationId: application.applicationId,
+			replicas: 4,
+		});
+		await Promise.resolve();
+		expect(db.select).toHaveBeenCalledTimes(1);
+
+		releaseFirstScale();
+		await expect(Promise.all([first, second])).resolves.toEqual([
+			{ applicationId: application.applicationId, replicas: 3 },
+			{ applicationId: application.applicationId, replicas: 4 },
+		]);
+		expect(storedReplicas).toBe(4);
+		for (const query of lockQueries) {
+			expect(query.for).toHaveBeenCalledWith("update");
+		}
+	});
+
+	it("keeps start and stop at one and zero replicas", async () => {
+		await scaleService("test-app", 3);
+		await scaleServiceRemote("server-id", "test-app", 4);
+		await startService("test-app");
+		await startServiceRemote("server-id", "test-app");
+		await stopService("test-app");
+		await stopServiceRemote("server-id", "test-app");
+
+		expect(vi.mocked(execProcess.execAsync).mock.calls).toEqual([
+			["docker service scale test-app=3 "],
+			["docker service scale test-app=1 "],
+			["docker service scale test-app=0 "],
+		]);
+		expect(vi.mocked(execProcess.execAsyncRemote).mock.calls).toEqual([
+			["server-id", "docker service scale test-app=4 "],
+			["server-id", "docker service scale test-app=1 "],
+			["server-id", "docker service scale test-app=0 "],
+		]);
 	});
 });

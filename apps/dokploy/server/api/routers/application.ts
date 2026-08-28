@@ -22,6 +22,8 @@ import {
 	removeService,
 	removeTraefikConfig,
 	sourceRevisionLabelPlaceholder,
+	scaleService,
+	scaleServiceRemote,
 	startService,
 	startServiceRemote,
 	stopService,
@@ -67,6 +69,7 @@ import {
 	apiSaveGithubProvider,
 	apiSaveGitlabProvider,
 	apiSaveGitProvider,
+	apiScaleApplication,
 	apiUpdateApplication,
 	applications,
 	environments,
@@ -348,6 +351,72 @@ export const applicationRouter = createTRPCRouter({
 				resourceName: service.appName,
 			});
 			return service;
+		}),
+
+	scale: protectedProcedure
+		.input(apiScaleApplication)
+		.mutation(async ({ input, ctx }) => {
+			await checkServicePermissionAndAccess(ctx, input.applicationId, {
+				deployment: ["create"],
+			});
+			let restoreRuntime: (() => Promise<void>) | undefined;
+			const service = await db
+				.transaction(async (tx) => {
+					const [application] = await tx
+						.select({
+							applicationId: applications.applicationId,
+							appName: applications.appName,
+							serverId: applications.serverId,
+							replicas: applications.replicas,
+						})
+						.from(applications)
+						.where(eq(applications.applicationId, input.applicationId))
+						.for("update");
+					if (!application) {
+						throw new TRPCError({
+							code: "NOT_FOUND",
+							message: "Application not found",
+						});
+					}
+					const scale = (replicas: number) => {
+						if (application.serverId) {
+							return scaleServiceRemote(
+								application.serverId,
+								application.appName,
+								replicas,
+							);
+						}
+						return scaleService(application.appName, replicas);
+					};
+					restoreRuntime = () => scale(application.replicas);
+					await scale(input.replicas);
+					await tx
+						.update(applications)
+						.set({ replicas: input.replicas })
+						.where(eq(applications.applicationId, application.applicationId));
+					return application;
+				})
+				.catch(async (error) => {
+					if (!restoreRuntime) {
+						throw error;
+					}
+					try {
+						await restoreRuntime();
+					} catch (compensationError) {
+						throw new AggregateError(
+							[error, compensationError],
+							"Application scale and runtime recovery failed",
+						);
+					}
+					throw error;
+				});
+			await audit(ctx, {
+				action: "update",
+				resourceType: "application",
+				resourceId: service.applicationId,
+				resourceName: service.appName,
+			});
+			return { applicationId: service.applicationId, replicas: input.replicas };
 		}),
 
 	redeploy: protectedProcedure
