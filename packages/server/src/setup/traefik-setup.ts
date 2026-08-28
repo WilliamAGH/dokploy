@@ -33,7 +33,7 @@ export const TRAEFIK_IMAGE =
 // Fail closed until the reviewed v3.6.25 image is published and this one
 // code-owned reference is replaced with its immutable digest.
 export const SWARM_READINESS_TRAEFIK_IMAGE =
-	"ghcr.io/williamagh/traefik@sha256:266c53de4730fcf9fa42445dd18c9ee294100e56cfffdc288656a6c48b6c48f2";
+	"ghcr.io/williamagh/traefik@sha256:445ede9f30d3fe0c1afb41523b0819059a44b5fc3e769b29f6057705ef2ab694";
 
 export const isSwarmReadinessTraefikImage = (
 	image = process.env.TRAEFIK_IMAGE,
