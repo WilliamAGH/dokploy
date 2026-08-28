@@ -123,6 +123,9 @@ describe("application Swarm readiness routing", () => {
 			},
 		]);
 		mocks.readTraefikRuntimeConfig.mockResolvedValue({
+			middlewares: {
+				"redirect-to-https@file": { status: "enabled" },
+			},
 			routers: {
 				"crawl4ai-7-web@swarm": {
 					service: "crawl4ai-7@swarm",
@@ -292,7 +295,7 @@ describe("application Swarm readiness routing", () => {
 
 		await vi.advanceTimersByTimeAsync(500);
 		await synchronization;
-		expect(mocks.readTraefikRuntimeConfig).toHaveBeenCalledTimes(2);
+		expect(mocks.readTraefikRuntimeConfig).toHaveBeenCalledTimes(3);
 		expect(mocks.removeTraefikConfig).toHaveBeenCalledTimes(1);
 		vi.useRealTimers();
 	});

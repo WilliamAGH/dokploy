@@ -83,6 +83,7 @@ const readExec = async (stream: Readable) => {
 };
 
 export interface TraefikRuntimeConfig {
+	middlewares?: Record<string, { status?: string }>;
 	routers?: Record<string, { service?: string; status?: string }>;
 	services?: Record<
 		string,

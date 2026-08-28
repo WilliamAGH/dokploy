@@ -204,6 +204,43 @@ const waitForFileRouting = async (application: ApplicationRouting) => {
 	throw new Error(`File routing for ${application.appName} did not recover`);
 };
 
+const expectedFileMiddlewareIds = (application: ApplicationRouting) =>
+	Object.entries(createApplicationRoutingLabels(application) ?? {})
+		.filter(([key]) => key.endsWith(".middlewares"))
+		.flatMap(([, value]) => value.split(","))
+		.map((middleware) => middleware.trim())
+		.filter((middleware) => middleware.endsWith("@file"));
+
+const waitForFileMiddlewares = async (application: ApplicationRouting) => {
+	const middlewareIds = expectedFileMiddlewareIds(application);
+	if (middlewareIds.length === 0) {
+		return;
+	}
+	for (let attempt = 0; attempt < ROUTING_CONVERGENCE_ATTEMPTS; attempt += 1) {
+		try {
+			const runtime = await readTraefikRuntimeConfig(
+				application.serverId ?? undefined,
+			);
+			if (
+				middlewareIds.every(
+					(middlewareId) =>
+						runtime.middlewares?.[middlewareId]?.status === "enabled",
+				)
+			) {
+				return;
+			}
+		} catch {
+			// File-provider middleware updates converge asynchronously.
+		}
+		await new Promise((resolve) =>
+			setTimeout(resolve, ROUTING_CONVERGENCE_RETRY_MS),
+		);
+	}
+	throw new Error(
+		`File middlewares for ${application.appName} did not converge`,
+	);
+};
+
 const toLabelRecord = (labels: string[]) =>
 	Object.fromEntries(
 		labels.map((label) => {
@@ -346,6 +383,7 @@ const activateSwarmReadinessRouting = async (
 	const hasLegacyRoute =
 		legacyRouterIds.length > 0 &&
 		legacyRouterIds.every((routerId) => legacyConfig.http?.routers?.[routerId]);
+	await waitForFileMiddlewares(application);
 	if (!(await syncApplicationRoutingLabels(application))) {
 		throw new Error(
 			`Cannot activate Swarm readiness routing before ${application.appName} is deployed`,
