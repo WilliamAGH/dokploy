@@ -86,6 +86,20 @@ const expectedSwarmRoutes = (application: ApplicationRouting) =>
 			}));
 		});
 
+const expectedSwarmRouterMiddlewares = (application: ApplicationRouting) => {
+	const labels = createApplicationRoutingLabels(application) ?? {};
+	return Object.fromEntries(
+		Object.entries(labels)
+			.filter(([key]) => key.endsWith(".middlewares"))
+			.map(([key, value]) => [
+				`${key
+					.replace(/^traefik\.http\.routers\./, "")
+					.replace(/\.middlewares$/, "")}@swarm`,
+				value.split(",").map((middleware) => middleware.trim()),
+			]),
+	);
+};
+
 const expectedFileRouterIds = (application: ApplicationRouting) =>
 	application.domains
 		.filter((domain) => domain.enabled && domain.domainType === "application")
@@ -135,6 +149,7 @@ const upServerAddresses = (serverStatus: Record<string, string> | undefined) =>
 
 const waitForSwarmRouting = async (application: ApplicationRouting) => {
 	const routes = expectedSwarmRoutes(application);
+	const routerMiddlewares = expectedSwarmRouterMiddlewares(application);
 	const serviceIds = [...new Set(routes.map(({ serviceId }) => serviceId))];
 	const taskAddresses = await expectedTaskAddresses(application);
 	if (routes.length === 0 || taskAddresses.length === 0) {
@@ -150,7 +165,12 @@ const waitForSwarmRouting = async (application: ApplicationRouting) => {
 			);
 			const routersReady = routes.every(({ routerId, serviceId }) => {
 				const router = runtime.routers?.[routerId];
-				return router?.status === "enabled" && router.service === serviceId;
+				return (
+					router?.status === "enabled" &&
+					router.service === serviceId &&
+					(router.middlewares ?? []).join(",") ===
+						(routerMiddlewares[routerId] ?? []).join(",")
+				);
 			});
 			const servicesReady = serviceIds.every((serviceId) => {
 				const service = runtime.services?.[serviceId];
@@ -251,6 +271,7 @@ const toLabelRecord = (labels: string[]) =>
 
 export const createApplicationRoutingLabels = (
 	application: ApplicationRouting,
+	preferFileRouting = false,
 ) => {
 	if (!usesSwarmReadinessRouting(application)) {
 		return undefined;
@@ -301,6 +322,11 @@ export const createApplicationRoutingLabels = (
 					continue;
 				}
 				labels[key] = key.endsWith(".service") ? `${serviceName}@swarm` : value;
+				if (preferFileRouting && key.endsWith(".rule")) {
+					labels[key.replace(/\.rule$/, ".priority")] = String(
+						Math.max(1, value.length - 1),
+					);
+				}
 			}
 		}
 
@@ -330,6 +356,7 @@ const isApplicationRoutingLabel = (appName: string, key: string) =>
 
 export const syncApplicationRoutingLabels = async (
 	application: ApplicationRouting,
+	routingLabels = createApplicationRoutingLabels(application),
 ) => {
 	const docker = await getRemoteDocker(application.serverId);
 	const service = docker.getService(application.appName);
@@ -357,7 +384,7 @@ export const syncApplicationRoutingLabels = async (
 		...inspect.Spec,
 		Labels: {
 			...existingLabels,
-			...createApplicationRoutingLabels(application),
+			...routingLabels,
 		},
 	});
 	return true;
@@ -384,7 +411,12 @@ const activateSwarmReadinessRouting = async (
 		legacyRouterIds.length > 0 &&
 		legacyRouterIds.every((routerId) => legacyConfig.http?.routers?.[routerId]);
 	await waitForFileMiddlewares(application);
-	if (!(await syncApplicationRoutingLabels(application))) {
+	if (
+		!(await syncApplicationRoutingLabels(
+			application,
+			createApplicationRoutingLabels(application, hasLegacyRoute),
+		))
+	) {
 		throw new Error(
 			`Cannot activate Swarm readiness routing before ${application.appName} is deployed`,
 		);
@@ -393,6 +425,8 @@ const activateSwarmReadinessRouting = async (
 		await waitForSwarmRouting(application);
 		if (hasLegacyRoute) {
 			await removeTraefikConfig(application.appName, application.serverId);
+			await syncApplicationRoutingLabels(application);
+			await waitForSwarmRouting(application);
 		}
 	} catch (error) {
 		if (!hasLegacyRoute) {

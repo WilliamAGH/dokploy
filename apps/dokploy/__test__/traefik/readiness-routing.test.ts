@@ -128,6 +128,7 @@ describe("application Swarm readiness routing", () => {
 			},
 			routers: {
 				"crawl4ai-7-web@swarm": {
+					middlewares: ["redirect-to-https@file"],
 					service: "crawl4ai-7@swarm",
 					status: "enabled",
 				},
@@ -223,6 +224,9 @@ describe("application Swarm readiness routing", () => {
 			}),
 		);
 		const updatedLabels = mocks.serviceUpdate.mock.calls[0]?.[0]?.Labels;
+		expect(updatedLabels).toHaveProperty(
+			"traefik.http.routers.crawl4ai-7-web.priority",
+		);
 		expect(updatedLabels).not.toHaveProperty(
 			"traefik.http.routers.crawl4ai-99-web.rule",
 		);
@@ -232,6 +236,9 @@ describe("application Swarm readiness routing", () => {
 		);
 		expect(mocks.serviceUpdate.mock.invocationCallOrder[0]).toBeLessThan(
 			mocks.removeTraefikConfig.mock.invocationCallOrder[0] ?? 0,
+		);
+		expect(mocks.serviceUpdate.mock.calls[1]?.[0]?.Labels).not.toHaveProperty(
+			"traefik.http.routers.crawl4ai-7-web.priority",
 		);
 	});
 
@@ -270,9 +277,10 @@ describe("application Swarm readiness routing", () => {
 
 	it("keeps the legacy VIP route until every task backend is admitted", async () => {
 		vi.useFakeTimers();
-		mocks.readTraefikRuntimeConfig.mockResolvedValueOnce({
+		const downRuntime = {
 			routers: {
 				"crawl4ai-7-web@swarm": {
+					middlewares: ["redirect-to-https@file"],
 					service: "crawl4ai-7@swarm",
 					status: "enabled",
 				},
@@ -287,7 +295,24 @@ describe("application Swarm readiness routing", () => {
 					serverStatus: { "http://10.0.0.11:11235": "DOWN" },
 				},
 			},
-		});
+		};
+		const upRuntime = {
+			...downRuntime,
+			middlewares: {
+				"redirect-to-https@file": { status: "enabled" },
+			},
+			services: {
+				"crawl4ai-7@swarm": {
+					status: "enabled",
+					serverStatus: { "http://10.0.0.11:11235": "UP" },
+				},
+			},
+		};
+		mocks.readTraefikRuntimeConfig
+			.mockReset()
+			.mockResolvedValueOnce(upRuntime)
+			.mockResolvedValueOnce(downRuntime)
+			.mockResolvedValue(upRuntime);
 
 		const synchronization = synchronizeApplicationRouting(application);
 		await vi.advanceTimersByTimeAsync(0);
@@ -295,7 +320,7 @@ describe("application Swarm readiness routing", () => {
 
 		await vi.advanceTimersByTimeAsync(500);
 		await synchronization;
-		expect(mocks.readTraefikRuntimeConfig).toHaveBeenCalledTimes(3);
+		expect(mocks.readTraefikRuntimeConfig).toHaveBeenCalledTimes(4);
 		expect(mocks.removeTraefikConfig).toHaveBeenCalledTimes(1);
 		vi.useRealTimers();
 	});
@@ -314,7 +339,7 @@ describe("application Swarm readiness routing", () => {
 		mocks.loadOrCreateConfigRemote.mockResolvedValueOnce({
 			http: { routers: { "crawl4ai-router-7": {} }, services: {} },
 		});
-		mocks.readTraefikRuntimeConfig.mockResolvedValueOnce({
+		mocks.readTraefikRuntimeConfig.mockResolvedValue({
 			routers: {
 				"crawl4ai-7-metrics@swarm": {
 					service: "crawl4ai-7@swarm",
