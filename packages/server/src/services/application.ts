@@ -167,31 +167,37 @@ const sanitizedServerStatus = (
 
 const runtimeTraefikRouting = async (
 	serverId: string | null,
+	appName: string,
 	rootLabels: Record<string, string>,
 ) => {
-	const routerIds = labelOwnerIds(
+	const swarmRouterIds = labelOwnerIds(
 		rootLabels,
 		"traefik.http.routers.",
 		".rule",
 	).map((routerId) => `${routerId}@swarm`);
-	const serviceIds = labelOwnerIds(
+	const swarmServiceIds = labelOwnerIds(
 		rootLabels,
 		"traefik.http.services.",
 		".loadbalancer.server.port",
 	).map((serviceId) => `${serviceId}@swarm`);
-	if (routerIds.length === 0 && serviceIds.length === 0) {
-		return { routers: [], services: [] };
-	}
-
 	const runtime = await readTraefikRuntimeConfig(serverId ?? undefined);
+	const fileRouterIds = Object.keys(runtime.routers ?? {}).filter(
+		(routerId) =>
+			routerId.startsWith(`${appName}-router-`) && routerId.endsWith("@file"),
+	);
+	const fileServiceIds = Object.keys(runtime.services ?? {}).filter(
+		(serviceId) =>
+			serviceId.startsWith(`${appName}-service-`) &&
+			serviceId.endsWith("@file"),
+	);
 	return {
-		routers: routerIds.flatMap((routerId) => {
+		routers: [...swarmRouterIds, ...fileRouterIds].flatMap((routerId) => {
 			const router = runtime.routers?.[routerId];
 			return router
 				? [{ routerId, status: router.status, service: router.service }]
 				: [];
 		}),
-		services: serviceIds.flatMap((serviceId) => {
+		services: [...swarmServiceIds, ...fileServiceIds].flatMap((serviceId) => {
 			const service = runtime.services?.[serviceId];
 			return service
 				? [
@@ -345,7 +351,11 @@ export const findApplicationRuntimeServiceState = async (
 		application.appName,
 		service.Spec.Labels,
 	);
-	const traefik = await runtimeTraefikRouting(application.serverId, rootLabels);
+	const traefik = await runtimeTraefikRouting(
+		application.serverId,
+		application.appName,
+		rootLabels,
+	);
 	const tasks = await dockerClient.listTasks({
 		filters: JSON.stringify({ service: [application.appName] }),
 	});
@@ -359,6 +369,7 @@ export const findApplicationRuntimeServiceState = async (
 		},
 		service: {
 			serviceId: service.ID,
+			versionIndex: service.Version?.Index ?? null,
 			name: service.Spec.Name ?? application.appName,
 			rootLabels,
 			taskLabels: runtimeTaskLabels(container?.Labels),
@@ -454,28 +465,34 @@ export const findApplicationRuntimeServiceState = async (
 					ReadOnly: mount.ReadOnly,
 				})),
 		},
-		tasks: tasks.map((serviceTask) => ({
-			taskId: serviceTask.ID,
-			slot: serviceTask.Slot,
-			nodeId: serviceTask.NodeID,
-			desiredState: serviceTask.DesiredState,
-			status: serviceTask.Status
-				? {
-						state: serviceTask.Status.State,
-						timestamp: serviceTask.Status.Timestamp,
-						containerId: serviceTask.Status.ContainerStatus?.ContainerID,
-					}
-				: null,
-			addresses: (serviceTask.NetworksAttachments ?? [])
-				.filter(
-					(attachment: RuntimeTaskNetworkAttachment) =>
-						attachment.Network?.Spec?.Name === "dokploy-network",
-				)
-				.flatMap(
-					(attachment: RuntimeTaskNetworkAttachment) =>
-						attachment.Addresses ?? [],
-				),
-		})),
+		tasks: tasks
+			.filter(
+				(serviceTask) =>
+					serviceTask.DesiredState === "running" ||
+					serviceTask.Status?.State === "running",
+			)
+			.map((serviceTask) => ({
+				taskId: serviceTask.ID,
+				slot: serviceTask.Slot,
+				nodeId: serviceTask.NodeID,
+				desiredState: serviceTask.DesiredState,
+				status: serviceTask.Status
+					? {
+							state: serviceTask.Status.State,
+							timestamp: serviceTask.Status.Timestamp,
+							containerId: serviceTask.Status.ContainerStatus?.ContainerID,
+						}
+					: null,
+				addresses: (serviceTask.NetworksAttachments ?? [])
+					.filter(
+						(attachment: RuntimeTaskNetworkAttachment) =>
+							attachment.Network?.Spec?.Name === "dokploy-network",
+					)
+					.flatMap(
+						(attachment: RuntimeTaskNetworkAttachment) =>
+							attachment.Addresses ?? [],
+					),
+			})),
 		traefik,
 	};
 };

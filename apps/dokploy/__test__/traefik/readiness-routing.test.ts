@@ -242,6 +242,28 @@ describe("application Swarm readiness routing", () => {
 		);
 	});
 
+	it("converges a partially present legacy route through the same cutover", async () => {
+		mocks.loadOrCreateConfigRemote.mockResolvedValueOnce({
+			http: {
+				routers: {},
+				services: { "crawl4ai-service-old-domain": {} },
+			},
+		});
+
+		await synchronizeApplicationRouting(application);
+
+		expect(mocks.serviceUpdate.mock.calls[0]?.[0]?.Labels).toHaveProperty(
+			"traefik.http.routers.crawl4ai-7-web.priority",
+		);
+		expect(mocks.removeTraefikConfig).toHaveBeenCalledWith(
+			"crawl4ai",
+			"server-id",
+		);
+		expect(mocks.serviceUpdate.mock.calls[1]?.[0]?.Labels).not.toHaveProperty(
+			"traefik.http.routers.crawl4ai-7-web.priority",
+		);
+	});
+
 	it("resynchronizes an already-native route without recreating a VIP file", async () => {
 		mocks.loadOrCreateConfigRemote.mockResolvedValueOnce({
 			http: { routers: {}, services: {} },
@@ -417,7 +439,9 @@ describe("application Swarm readiness routing", () => {
 		);
 		expect(
 			mocks.writeTraefikConfigRemote.mock.invocationCallOrder[0],
-		).toBeLessThan(mocks.readTraefikRuntimeConfig.mock.invocationCallOrder[0] ?? 0);
+		).toBeLessThan(
+			mocks.readTraefikRuntimeConfig.mock.invocationCallOrder[0] ?? 0,
+		);
 		expect(
 			mocks.readTraefikRuntimeConfig.mock.invocationCallOrder[0],
 		).toBeLessThan(mocks.serviceUpdate.mock.invocationCallOrder[0] ?? 0);

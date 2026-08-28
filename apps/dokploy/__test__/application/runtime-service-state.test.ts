@@ -64,6 +64,28 @@ describe("application runtime service state", () => {
 					},
 				],
 			},
+			{
+				ID: "draining-task-id",
+				Slot: 2,
+				NodeID: "draining-node-id",
+				DesiredState: "shutdown",
+				Status: {
+					State: "running",
+					Timestamp: "2026-08-28T00:01:00Z",
+					ContainerStatus: { ContainerID: "draining-container-id" },
+				},
+			},
+			{
+				ID: "historical-task-id",
+				Slot: 3,
+				NodeID: "historical-node-id",
+				DesiredState: "shutdown",
+				Status: {
+					State: "shutdown",
+					Timestamp: "2026-08-27T00:00:00Z",
+					ContainerStatus: { ContainerID: "historical-container-id" },
+				},
+			},
 		]);
 		mocks.readTraefikRuntimeConfig.mockResolvedValue({
 			routers: {
@@ -73,6 +95,10 @@ describe("application runtime service state", () => {
 				},
 				"another-service@swarm": {
 					service: "another-service@swarm",
+					status: "enabled",
+				},
+				"crawl4ai-router-old@file": {
+					service: "crawl4ai-service-old@file",
 					status: "enabled",
 				},
 			},
@@ -89,10 +115,17 @@ describe("application runtime service state", () => {
 						"http://secret-other-service@10.0.0.99:8080": "UP",
 					},
 				},
+				"crawl4ai-service-old@file": {
+					status: "enabled",
+					serverStatus: {
+						"http://token:secret-file-route@legacy-crawl4ai:11235": "UP",
+					},
+				},
 			},
 		});
 		mocks.inspect.mockResolvedValue({
 			ID: "service-id",
+			Version: { Index: 9 },
 			Spec: {
 				Name: "crawl4ai",
 				Labels: {
@@ -198,6 +231,7 @@ describe("application runtime service state", () => {
 			"traefik.http.routers.crawl4ai-7-web.rule": "Host(`crawl.example.com`)",
 			"traefik.http.services.crawl4ai-7.loadbalancer.server.port": "11235",
 		});
+		expect(state.service.versionIndex).toBe(9);
 		expect(state.service.taskLabels).toEqual({
 			"otel.service.name": "crawl4ai",
 			"otel.deployment.environment.name": "production",
@@ -223,6 +257,18 @@ describe("application runtime service state", () => {
 				},
 				addresses: ["10.0.0.11/24"],
 			},
+			{
+				taskId: "draining-task-id",
+				slot: 2,
+				nodeId: "draining-node-id",
+				desiredState: "shutdown",
+				status: {
+					state: "running",
+					timestamp: "2026-08-28T00:01:00Z",
+					containerId: "draining-container-id",
+				},
+				addresses: [],
+			},
 		]);
 		expect(state.service.networks).toEqual([
 			{ Target: "dokploy-network", Aliases: ["crawl4ai"] },
@@ -242,12 +288,22 @@ describe("application runtime service state", () => {
 					status: "enabled",
 					service: "crawl4ai-7@swarm",
 				},
+				{
+					routerId: "crawl4ai-router-old@file",
+					status: "enabled",
+					service: "crawl4ai-service-old@file",
+				},
 			],
 			services: [
 				{
 					serviceId: "crawl4ai-7@swarm",
 					status: "enabled",
 					serverStatus: { "http://10.0.0.11:11235": "UP" },
+				},
+				{
+					serviceId: "crawl4ai-service-old@file",
+					status: "enabled",
+					serverStatus: { "http://legacy-crawl4ai:11235": "UP" },
 				},
 			],
 		});

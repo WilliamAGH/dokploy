@@ -408,8 +408,8 @@ const activateSwarmReadinessRouting = async (
 		return;
 	}
 	const hasLegacyRoute =
-		legacyRouterIds.length > 0 &&
-		legacyRouterIds.every((routerId) => legacyConfig.http?.routers?.[routerId]);
+		Object.keys(legacyConfig.http?.routers ?? {}).length > 0 ||
+		Object.keys(legacyConfig.http?.services ?? {}).length > 0;
 	await waitForFileMiddlewares(application);
 	if (
 		!(await syncApplicationRoutingLabels(
