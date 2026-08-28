@@ -118,12 +118,21 @@ export const settingsRouter = createTRPCRouter({
 	reloadTraefik: adminProcedure
 		.input(apiServerSchema)
 		.mutation(async ({ input, ctx }) => {
-			// Run in background so the request returns immediately; avoids proxy timeouts.
-			void reloadDockerResource("dokploy-traefik", input?.serverId).catch(
-				(err) => {
-					console.error("reloadTraefik background:", err);
-				},
+			const env = prepareEnvironmentVariables(
+				await readEnvironmentVariables("dokploy-traefik", input?.serverId),
 			);
+			const additionalPorts = await readPorts(
+				"dokploy-traefik",
+				input?.serverId,
+			);
+			// Reconciliation can briefly replace the proxy, so finish outside the request.
+			void writeTraefikSetup({
+				env,
+				additionalPorts,
+				serverId: input?.serverId,
+			}).catch((err) => {
+				console.error("reloadTraefik background:", err);
+			});
 			await audit(ctx, {
 				action: "reload",
 				resourceType: "settings",
