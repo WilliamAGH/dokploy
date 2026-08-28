@@ -5,7 +5,14 @@ import {
 	updateSSHKeyById,
 } from "@dokploy/server/services/ssh-key";
 import { quote } from "shell-quote";
+import { z } from "zod";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
+
+export const sourceRevisionSchema = z
+	.string()
+	.regex(/^[0-9a-f]{40}$/, "Source revision must be a lowercase 40-hex SHA");
+
+export const sourceRevisionLabelPlaceholder = "${DOKPLOY_SOURCE_REVISION}";
 
 interface CloneGitRepository {
 	appName: string;
@@ -157,22 +164,23 @@ interface Props {
 	appName: string;
 	type?: "application" | "compose";
 	serverId: string | null;
+	expectedRevision?: string;
 }
 
 export const getGitCommitInfo = async ({
 	appName,
 	type = "application",
 	serverId,
+	expectedRevision,
 }: Props) => {
 	const { COMPOSE_PATH, APPLICATIONS_PATH } = paths(!!serverId);
 	const basePath = type === "compose" ? COMPOSE_PATH : APPLICATIONS_PATH;
 	const outputPath = join(basePath, appName, "code");
 	let stdoutResult = "";
-	const result = {
-		message: "",
-		hash: "",
-	};
 	try {
+		const expectedSourceRevision = sourceRevisionSchema
+			.optional()
+			.parse(expectedRevision);
 		const gitCommand = `git -C ${outputPath} log -1 --pretty=format:"%H---DELIMITER---%B"`;
 		if (serverId) {
 			const { stdout } = await execAsyncRemote(serverId, gitCommand);
@@ -183,13 +191,21 @@ export const getGitCommitInfo = async ({
 		}
 
 		const parts = stdoutResult.split("---DELIMITER---");
-		if (parts && parts.length === 2) {
-			result.hash = parts[0]?.trim() || "";
-			result.message = parts[1]?.trim() || "";
+		if (parts.length !== 2) {
+			throw new Error("Unable to read the checkout source revision");
 		}
+
+		const hash = sourceRevisionSchema.parse(parts[0]?.trim());
+		if (expectedSourceRevision && hash !== expectedSourceRevision) {
+			throw new Error("Checked out source revision does not match the webhook");
+		}
+
+		return {
+			hash,
+			message: parts[1]?.trim() || "",
+		};
 	} catch (error) {
 		console.error(`Error getting git commit info: ${error}`);
 		return null;
 	}
-	return result;
 };

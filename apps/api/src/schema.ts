@@ -1,3 +1,4 @@
+import { sourceRevisionSchema } from "@dokploy/server";
 import { z } from "zod";
 
 export const deployJobSchema = z.discriminatedUnion("applicationType", [
@@ -8,6 +9,7 @@ export const deployJobSchema = z.discriminatedUnion("applicationType", [
 		server: z.boolean().optional(),
 		type: z.enum(["deploy", "redeploy"]),
 		applicationType: z.literal("application"),
+		sourceRevision: sourceRevisionSchema.optional(),
 		serverId: z.string().min(1),
 	}),
 	z.object({

@@ -22,6 +22,7 @@ import { buildRemoteDocker } from "@dokploy/server/utils/providers/docker";
 import {
 	cloneGitRepository,
 	getGitCommitInfo,
+	sourceRevisionSchema,
 } from "@dokploy/server/utils/providers/git";
 import { cloneGiteaRepository } from "@dokploy/server/utils/providers/gitea";
 import { cloneGithubRepository } from "@dokploy/server/utils/providers/github";
@@ -179,10 +180,12 @@ export const deployApplication = async ({
 	applicationId,
 	titleLog = "Manual deployment",
 	descriptionLog = "",
+	sourceRevision,
 }: {
 	applicationId: string;
 	titleLog: string;
 	descriptionLog: string;
+	sourceRevision?: string;
 }) => {
 	const application = await findApplicationById(applicationId);
 	const serverId = application.buildServerId || application.serverId;
@@ -197,11 +200,23 @@ export const deployApplication = async ({
 		title: titleLog,
 		description: descriptionLog,
 	});
+	const isGitSource =
+		application.sourceType !== "docker" && application.sourceType !== "drop";
+	let commitInfo: Awaited<ReturnType<typeof getGitCommitInfo>> = null;
 
 	try {
+		if (sourceRevision !== undefined && application.sourceType !== "github") {
+			throw new Error("Only GitHub deployments can specify a source revision");
+		}
+		const expectedSourceRevision = sourceRevisionSchema
+			.optional()
+			.parse(sourceRevision);
 		let command = "set -e;";
 		if (application.sourceType === "github") {
-			command += await cloneGithubRepository(applicationEntity);
+			command += await cloneGithubRepository({
+				...applicationEntity,
+				sourceRevision: expectedSourceRevision,
+			});
 		} else if (application.sourceType === "gitlab") {
 			command += await cloneGitlabRepository(applicationEntity);
 		} else if (application.sourceType === "gitea") {
@@ -214,6 +229,26 @@ export const deployApplication = async ({
 			command += await buildRemoteDocker(application);
 		}
 
+		if (isGitSource) {
+			const cloneCommandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+			if (serverId) {
+				await execAsyncRemote(serverId, cloneCommandWithLog);
+			} else {
+				await execAsync(cloneCommandWithLog);
+			}
+
+			commitInfo = await getGitCommitInfo({
+				appName: application.appName,
+				type: "application",
+				serverId,
+				expectedRevision: expectedSourceRevision,
+			});
+			if (!commitInfo) {
+				throw new Error("Unable to determine a valid checkout source revision");
+			}
+			command = "set -e;";
+		}
+
 		if (application.sourceType !== "docker") {
 			command += await generateApplyPatchesCommand({
 				id: application.applicationId,
@@ -222,7 +257,7 @@ export const deployApplication = async ({
 			});
 		}
 
-		command += await getBuildCommand(application);
+		command += await getBuildCommand(application, commitInfo?.hash);
 
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (serverId) {
@@ -231,7 +266,7 @@ export const deployApplication = async ({
 			await execAsync(commandWithLog);
 		}
 
-		await mechanizeDockerContainer(application);
+		await mechanizeDockerContainer(application, commitInfo?.hash);
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 		await updateApplicationStatus(applicationId, "done");
 
@@ -267,7 +302,7 @@ export const deployApplication = async ({
 			projectName: application.environment.project.name,
 			applicationName: application.name,
 			applicationType: "application",
-			// @ts-ignore
+			// @ts-expect-error
 			errorMessage: error?.message || "Error building",
 			buildLink,
 			organizationId: application.environment.project.organizationId,
@@ -275,19 +310,11 @@ export const deployApplication = async ({
 
 		throw error;
 	} finally {
-		// Only extract commit info for non-docker sources
-		if (application.sourceType !== "docker") {
-			const commitInfo = await getGitCommitInfo({
-				appName: application.appName,
-				type: "application",
-				serverId: serverId,
+		if (commitInfo) {
+			await updateDeployment(deployment.deploymentId, {
+				title: commitInfo.message,
+				description: `Commit: ${commitInfo.hash}`,
 			});
-			if (commitInfo) {
-				await updateDeployment(deployment.deploymentId, {
-					title: commitInfo.message,
-					description: `Commit: ${commitInfo.hash}`,
-				});
-			}
 		}
 	}
 	return true;
@@ -311,18 +338,29 @@ export const rebuildApplication = async ({
 		title: titleLog,
 		description: descriptionLog,
 	});
+	const isGitSource =
+		application.sourceType !== "docker" && application.sourceType !== "drop";
 
 	try {
+		const commitInfo = isGitSource
+			? await getGitCommitInfo({
+					appName: application.appName,
+					type: "application",
+					serverId,
+				})
+			: null;
+		if (isGitSource && !commitInfo) {
+			throw new Error("Unable to determine a valid checkout source revision");
+		}
 		let command = "set -e;";
-		// Check case for docker only
-		command += await getBuildCommand(application);
+		command += await getBuildCommand(application, commitInfo?.hash);
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (serverId) {
 			await execAsyncRemote(serverId, commandWithLog);
 		} else {
 			await execAsync(commandWithLog);
 		}
-		await mechanizeDockerContainer(application);
+		await mechanizeDockerContainer(application, commitInfo?.hash);
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 		await updateApplicationStatus(applicationId, "done");
 
@@ -440,15 +478,29 @@ export const deployPreviewApplication = async ({
 				appName: previewDeployment.appName,
 				branch: previewDeployment.branch,
 			});
-			command += await getBuildCommand(application);
-
 			const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 			if (application.serverId) {
 				await execAsyncRemote(application.serverId, commandWithLog);
 			} else {
 				await execAsync(commandWithLog);
 			}
-			await mechanizeDockerContainer(application);
+			const commitInfo = await getGitCommitInfo({
+				appName: application.appName,
+				type: "application",
+				serverId: application.serverId,
+			});
+			if (!commitInfo) {
+				throw new Error("Unable to determine a valid checkout source revision");
+			}
+			command = "set -e;";
+			command += await getBuildCommand(application, commitInfo.hash);
+			const buildCommandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
+			if (application.serverId) {
+				await execAsyncRemote(application.serverId, buildCommandWithLog);
+			} else {
+				await execAsync(buildCommandWithLog);
+			}
+			await mechanizeDockerContainer(application, commitInfo.hash);
 		}
 		const successComment = getIssueComment(
 			application.name,
@@ -554,15 +606,23 @@ export const rebuildPreviewApplication = async ({
 
 		const serverId = application.serverId;
 		let command = "set -e;";
+		const commitInfo = await getGitCommitInfo({
+			appName: application.appName,
+			type: "application",
+			serverId,
+		});
+		if (!commitInfo) {
+			throw new Error("Unable to determine a valid checkout source revision");
+		}
 		// Only rebuild, don't clone repository
-		command += await getBuildCommand(application);
+		command += await getBuildCommand(application, commitInfo.hash);
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (serverId) {
 			await execAsyncRemote(serverId, commandWithLog);
 		} else {
 			await execAsync(commandWithLog);
 		}
-		await mechanizeDockerContainer(application);
+		await mechanizeDockerContainer(application, commitInfo.hash);
 
 		const successComment = getIssueComment(
 			application.name,

@@ -264,6 +264,10 @@ export default async function handler(
 				applicationId: application.applicationId as string,
 				titleLog: deploymentTitle,
 				...(deploymentHash && { descriptionLog: `Hash: ${deploymentHash}` }),
+				...(sourceType === "github" &&
+					req.headers["x-github-event"] === "push" && {
+						sourceRevision: deploymentHash,
+					}),
 				type: "deploy",
 				applicationType: "application",
 				server: !!application.serverId,
@@ -497,7 +501,7 @@ export const extractCommitMessage = (headers: any, body: any) => {
 export const extractHash = (headers: any, body: any) => {
 	// GitHub
 	if (headers["x-github-event"]) {
-		return body.head_commit ? body.head_commit.id : "";
+		return body.after || body.head_commit?.id || "";
 	}
 
 	// GitLab

@@ -1,10 +1,12 @@
 import type { ApplicationNested } from "@dokploy/server/utils/builders";
 import { mechanizeDockerContainer } from "@dokploy/server/utils/builders";
+import { sourceRevisionLabelPlaceholder } from "@dokploy/server/utils/providers/git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockCreateServiceOptions = {
 	TaskTemplate?: {
 		ContainerSpec?: {
+			Labels?: Record<string, string>;
 			StopGracePeriod?: number;
 			Ulimits?: Array<{ Name: string; Soft: number; Hard: number }>;
 		};
@@ -157,5 +159,54 @@ describe("mechanizeDockerContainer", () => {
 		}
 		const [settings] = call;
 		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty("Ulimits");
+	});
+
+	it("renders the source revision label for each deployment without changing stored labels", async () => {
+		const labelsSwarm = {
+			"org.opencontainers.image.revision": sourceRevisionLabelPlaceholder,
+			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
+			"test.static": "unchanged",
+		};
+		const application = createApplication({ labelsSwarm });
+		const firstRevision = "0123456789abcdef0123456789abcdef01234567";
+		const secondRevision = "89abcdef0123456789abcdef0123456789abcdef";
+
+		await mechanizeDockerContainer(application, firstRevision);
+		await mechanizeDockerContainer(application, secondRevision);
+
+		const firstSettings = createServiceMock.mock.calls[0]?.[0];
+		const secondSettings = createServiceMock.mock.calls[1]?.[0];
+		expect(firstSettings?.TaskTemplate?.ContainerSpec?.Labels).toEqual({
+			"org.opencontainers.image.revision": firstRevision,
+			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
+			"test.static": "unchanged",
+		});
+		expect(secondSettings?.TaskTemplate?.ContainerSpec?.Labels).toEqual({
+			"org.opencontainers.image.revision": secondRevision,
+			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
+			"test.static": "unchanged",
+		});
+		expect(labelsSwarm).toEqual({
+			"org.opencontainers.image.revision": sourceRevisionLabelPlaceholder,
+			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
+			"test.static": "unchanged",
+		});
+	});
+
+	it("rejects unresolved or malformed source revision labels before creating a service", async () => {
+		const application = createApplication({
+			labelsSwarm: {
+				"org.opencontainers.image.revision": sourceRevisionLabelPlaceholder,
+			},
+		});
+
+		await expect(mechanizeDockerContainer(application)).rejects.toThrow(
+			"DOKPLOY_SOURCE_REVISION requires a deployment source revision",
+		);
+		await expect(
+			mechanizeDockerContainer(application, "not-a-source-revision"),
+		).rejects.toThrow("Source revision must be a lowercase 40-hex SHA");
+		expect(createServiceMock).not.toHaveBeenCalled();
+		expect(getServiceMock).not.toHaveBeenCalled();
 	});
 });

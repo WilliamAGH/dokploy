@@ -34,6 +34,7 @@ export const rollbacks = pgTable("rollback", {
 			mounts: Mount[];
 			ports: Port[];
 			registry?: Registry | null;
+			sourceRevision?: string;
 		}
 	>(),
 });

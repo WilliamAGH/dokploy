@@ -9,6 +9,7 @@ import {
 	getAccessibleServerIds,
 	getApplicationStats,
 	getContainerLogs,
+	getGitCommitInfo,
 	getWebServerSettings,
 	IS_CLOUD,
 	mechanizeDockerContainer,
@@ -20,6 +21,7 @@ import {
 	removePreviewDeployment,
 	removeService,
 	removeTraefikConfig,
+	sourceRevisionLabelPlaceholder,
 	startService,
 	startServiceRemote,
 	stopService,
@@ -201,7 +203,26 @@ export const applicationRouter = createTRPCRouter({
 
 			try {
 				await updateApplicationStatus(input.applicationId, "idle");
-				await mechanizeDockerContainer(application);
+				const requiresSourceRevision = Object.values(
+					application.labelsSwarm ?? {},
+				).includes(sourceRevisionLabelPlaceholder);
+				const isGitSource =
+					application.sourceType !== "docker" &&
+					application.sourceType !== "drop";
+				const commitInfo =
+					requiresSourceRevision && isGitSource
+						? await getGitCommitInfo({
+								appName: application.appName,
+								type: "application",
+								serverId: application.buildServerId || application.serverId,
+							})
+						: null;
+				if (requiresSourceRevision && isGitSource && !commitInfo) {
+					throw new Error(
+						"Unable to determine a valid checkout source revision",
+					);
+				}
+				await mechanizeDockerContainer(application, commitInfo?.hash);
 				await updateApplicationStatus(input.applicationId, "done");
 				await audit(ctx, {
 					action: "reload",

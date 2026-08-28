@@ -1,7 +1,14 @@
 import * as adminService from "@dokploy/server/services/admin";
 import * as applicationService from "@dokploy/server/services/application";
-import { deployApplication } from "@dokploy/server/services/application";
+import {
+	deployApplication,
+	deployPreviewApplication,
+	rebuildApplication,
+	rebuildPreviewApplication,
+} from "@dokploy/server/services/application";
 import * as deploymentService from "@dokploy/server/services/deployment";
+import * as githubService from "@dokploy/server/services/github";
+import * as previewDeploymentService from "@dokploy/server/services/preview-deployment";
 import * as builders from "@dokploy/server/utils/builders";
 import * as notifications from "@dokploy/server/utils/notifications/build-success";
 import * as execProcess from "@dokploy/server/utils/process/execAsync";
@@ -61,8 +68,21 @@ vi.mock("@dokploy/server/services/admin", () => ({
 
 vi.mock("@dokploy/server/services/deployment", () => ({
 	createDeployment: vi.fn(),
+	createDeploymentPreview: vi.fn(),
 	updateDeploymentStatus: vi.fn(),
 	updateDeployment: vi.fn(),
+}));
+
+vi.mock("@dokploy/server/services/github", () => ({
+	createPreviewDeploymentComment: vi.fn(),
+	getIssueComment: vi.fn(() => "preview deployment comment"),
+	issueCommentExists: vi.fn(),
+	updateIssueComment: vi.fn(),
+}));
+
+vi.mock("@dokploy/server/services/preview-deployment", () => ({
+	findPreviewDeploymentById: vi.fn(),
+	updatePreviewDeployment: vi.fn(),
 }));
 
 vi.mock("@dokploy/server/utils/providers/git", async () => {
@@ -74,6 +94,10 @@ vi.mock("@dokploy/server/utils/providers/git", async () => {
 		getGitCommitInfo: vi.fn(),
 	};
 });
+
+vi.mock("@dokploy/server/utils/providers/github", () => ({
+	cloneGithubRepository: vi.fn(),
+}));
 
 vi.mock("@dokploy/server/utils/process/execAsync", () => ({
 	execAsync: vi.fn(),
@@ -105,6 +129,9 @@ vi.mock("@dokploy/server/services/rollbacks", () => ({
 
 import { db } from "@dokploy/server/db";
 import { cloneGitRepository } from "@dokploy/server/utils/providers/git";
+import * as githubProvider from "@dokploy/server/utils/providers/github";
+
+const sourceRevision = "0123456789abcdef0123456789abcdef01234567";
 
 const createMockApplication = (overrides = {}) => ({
 	applicationId: "test-app-id",
@@ -140,6 +167,17 @@ const createMockDeployment = () => ({
 	logPath: "/tmp/test-deployment.log",
 });
 
+const createMockPreviewDeployment = () => ({
+	appName: "preview-test-app",
+	branch: "feature/preview",
+	domain: {
+		host: "preview.example.com",
+		https: true,
+	},
+	pullRequestCommentId: "123",
+	pullRequestNumber: "42",
+});
+
 describe("deployApplication - Command Generation Tests", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -153,6 +191,9 @@ describe("deployApplication - Command Generation Tests", () => {
 			"http://localhost:3000",
 		);
 		vi.mocked(deploymentService.createDeployment).mockResolvedValue(
+			createMockDeployment() as any,
+		);
+		vi.mocked(deploymentService.createDeploymentPreview).mockResolvedValue(
 			createMockDeployment() as any,
 		);
 		vi.mocked(execProcess.execAsync).mockResolvedValue({
@@ -173,9 +214,20 @@ describe("deployApplication - Command Generation Tests", () => {
 		);
 		vi.mocked(gitProvider.getGitCommitInfo).mockResolvedValue({
 			message: "test commit",
-			hash: "abc123",
+			hash: sourceRevision,
 		});
+		vi.mocked(githubProvider.cloneGithubRepository).mockResolvedValue(
+			"git clone github",
+		);
 		vi.mocked(deploymentService.updateDeployment).mockResolvedValue({} as any);
+		vi.mocked(githubService.issueCommentExists).mockResolvedValue(true);
+		vi.mocked(githubService.updateIssueComment).mockResolvedValue(undefined);
+		vi.mocked(
+			previewDeploymentService.findPreviewDeploymentById,
+		).mockResolvedValue(createMockPreviewDeployment() as any);
+		vi.mocked(
+			previewDeploymentService.updatePreviewDeployment,
+		).mockResolvedValue({} as any);
 	});
 
 	it("should generate correct git clone command for astro example", async () => {
@@ -214,6 +266,7 @@ describe("deployApplication - Command Generation Tests", () => {
 				customGitUrl: "https://github.com/Dokploy/examples.git",
 				buildPath: "/astro",
 			}),
+			sourceRevision,
 		);
 
 		expect(execProcess.execAsync).toHaveBeenCalledWith(
@@ -243,6 +296,7 @@ describe("deployApplication - Command Generation Tests", () => {
 			expect.objectContaining({
 				buildType: "railpack",
 			}),
+			sourceRevision,
 		);
 
 		expect(execProcess.execAsync).toHaveBeenCalledWith(
@@ -263,10 +317,11 @@ describe("deployApplication - Command Generation Tests", () => {
 		const execCalls = vi.mocked(execProcess.execAsync).mock.calls;
 		expect(execCalls.length).toBeGreaterThan(0);
 
-		const fullCommand = execCalls[0]?.[0];
-		expect(fullCommand).toContain("set -e");
-		expect(fullCommand).toContain("git clone");
-		expect(fullCommand).toContain("nixpacks build");
+		const cloneCommand = execCalls[0]?.[0];
+		const buildCommand = execCalls[1]?.[0];
+		expect(cloneCommand).toContain("set -e");
+		expect(cloneCommand).toContain("git clone");
+		expect(buildCommand).toContain("nixpacks build");
 	});
 
 	it("should include log redirection in command", async () => {
@@ -280,8 +335,185 @@ describe("deployApplication - Command Generation Tests", () => {
 		});
 
 		const execCalls = vi.mocked(execProcess.execAsync).mock.calls;
-		const fullCommand = execCalls[0]?.[0];
+		const fullCommand = execCalls[1]?.[0];
 
 		expect(fullCommand).toContain(">> /tmp/test-deployment.log 2>&1");
+	});
+
+	it("pins a GitHub webhook deployment to its source revision", async () => {
+		const githubApplication = createMockApplication({ sourceType: "github" });
+		vi.mocked(db.query.applications.findFirst).mockResolvedValue(
+			githubApplication as any,
+		);
+		vi.mocked(applicationService.findApplicationById).mockResolvedValue(
+			githubApplication as any,
+		);
+
+		await deployApplication({
+			applicationId: "test-app-id",
+			titleLog: "Webhook deployment",
+			descriptionLog: "",
+			sourceRevision,
+		});
+
+		expect(githubProvider.cloneGithubRepository).toHaveBeenCalledWith(
+			expect.objectContaining({ sourceRevision }),
+		);
+		expect(gitProvider.getGitCommitInfo).toHaveBeenCalledWith(
+			expect.objectContaining({ expectedRevision: sourceRevision }),
+		);
+		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
+			expect.anything(),
+			sourceRevision,
+		);
+	});
+
+	it.each([
+		["blank", ""],
+		["short", "0123456789abcdef"],
+		["uppercase", "0123456789ABCDEF0123456789ABCDEF01234567"],
+		["non-hex", "gggggggggggggggggggggggggggggggggggggggg"],
+	])(
+		"rejects a $0 GitHub webhook revision before cloning, building, or rendering",
+		async (_revisionType, invalidSourceRevision) => {
+			const githubApplication = createMockApplication({ sourceType: "github" });
+			vi.mocked(db.query.applications.findFirst).mockResolvedValue(
+				githubApplication as any,
+			);
+			vi.mocked(applicationService.findApplicationById).mockResolvedValue(
+				githubApplication as any,
+			);
+
+			await expect(
+				deployApplication({
+					applicationId: "test-app-id",
+					descriptionLog: "",
+					sourceRevision: invalidSourceRevision,
+					titleLog: "Webhook deployment",
+				}),
+			).rejects.toThrow("Source revision must be a lowercase 40-hex SHA");
+
+			expect(githubProvider.cloneGithubRepository).not.toHaveBeenCalled();
+			expect(builders.getBuildCommand).not.toHaveBeenCalled();
+			expect(builders.mechanizeDockerContainer).not.toHaveBeenCalled();
+		},
+	);
+
+	it("fails before rendering when the checkout revision is unavailable", async () => {
+		vi.mocked(gitProvider.getGitCommitInfo).mockResolvedValueOnce(null);
+
+		await expect(
+			deployApplication({
+				applicationId: "test-app-id",
+				titleLog: "Test",
+				descriptionLog: "",
+			}),
+		).rejects.toThrow("Unable to determine a valid checkout source revision");
+
+		expect(builders.getBuildCommand).not.toHaveBeenCalled();
+		expect(builders.mechanizeDockerContainer).not.toHaveBeenCalled();
+	});
+
+	it("derives the current checkout revision before rebuilding", async () => {
+		await rebuildApplication({
+			applicationId: "test-app-id",
+			titleLog: "Rebuild",
+			descriptionLog: "",
+		});
+
+		expect(gitProvider.getGitCommitInfo).toHaveBeenCalledWith(
+			expect.objectContaining({
+				appName: "test-app",
+				type: "application",
+			}),
+		);
+		expect(builders.getBuildCommand).toHaveBeenCalledWith(
+			expect.anything(),
+			sourceRevision,
+		);
+		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
+			expect.anything(),
+			sourceRevision,
+		);
+	});
+
+	it("derives the preview checkout revision before building and rendering", async () => {
+		const githubApplication = createMockApplication({
+			githubId: "github-id",
+			owner: "dokploy",
+			previewBuildArgs: "",
+			previewBuildSecrets: "",
+			previewEnv: "",
+			repository: "dokploy",
+			sourceType: "github",
+		});
+		vi.mocked(db.query.applications.findFirst).mockResolvedValue(
+			githubApplication as any,
+		);
+		vi.mocked(applicationService.findApplicationById).mockResolvedValue(
+			githubApplication as any,
+		);
+		vi.mocked(builders.getBuildCommand).mockResolvedValue("preview build");
+
+		await deployPreviewApplication({
+			applicationId: "test-app-id",
+			descriptionLog: "",
+			previewDeploymentId: "preview-deployment-id",
+			titleLog: "Preview",
+		});
+
+		expect(gitProvider.getGitCommitInfo).toHaveBeenCalledWith({
+			appName: "preview-test-app",
+			serverId: null,
+			type: "application",
+		});
+		expect(builders.getBuildCommand).toHaveBeenCalledWith(
+			expect.objectContaining({ appName: "preview-test-app" }),
+			sourceRevision,
+		);
+		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
+			expect.objectContaining({ appName: "preview-test-app" }),
+			sourceRevision,
+		);
+	});
+
+	it("derives the existing preview checkout revision before rebuilding", async () => {
+		const githubApplication = createMockApplication({
+			githubId: "github-id",
+			owner: "dokploy",
+			previewBuildArgs: "",
+			previewBuildSecrets: "",
+			previewEnv: "",
+			repository: "dokploy",
+			sourceType: "github",
+		});
+		vi.mocked(db.query.applications.findFirst).mockResolvedValue(
+			githubApplication as any,
+		);
+		vi.mocked(applicationService.findApplicationById).mockResolvedValue(
+			githubApplication as any,
+		);
+		vi.mocked(builders.getBuildCommand).mockResolvedValue("preview build");
+
+		await rebuildPreviewApplication({
+			applicationId: "test-app-id",
+			descriptionLog: "",
+			previewDeploymentId: "preview-deployment-id",
+			titleLog: "Preview rebuild",
+		});
+
+		expect(gitProvider.getGitCommitInfo).toHaveBeenCalledWith({
+			appName: "preview-test-app",
+			serverId: null,
+			type: "application",
+		});
+		expect(builders.getBuildCommand).toHaveBeenCalledWith(
+			expect.objectContaining({ appName: "preview-test-app" }),
+			sourceRevision,
+		);
+		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
+			expect.objectContaining({ appName: "preview-test-app" }),
+			sourceRevision,
+		);
 	});
 });

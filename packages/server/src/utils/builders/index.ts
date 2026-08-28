@@ -39,7 +39,10 @@ export type ApplicationNested = InferResultType<
 	}
 >;
 
-export const getBuildCommand = async (rawApplication: ApplicationNested) => {
+export const getBuildCommand = async (
+	rawApplication: ApplicationNested,
+	sourceRevision?: string,
+) => {
 	const application = await withResolvedVaultRefs(rawApplication);
 	let command = "";
 
@@ -59,7 +62,7 @@ export const getBuildCommand = async (rawApplication: ApplicationNested) => {
 				command = getStaticCommand(application);
 				break;
 			case "dockerfile":
-				command = getDockerCommand(application);
+				command = getDockerCommand(application, sourceRevision);
 				break;
 			case "railpack":
 				command = getRailpackCommand(application);
@@ -80,6 +83,7 @@ export const getBuildCommand = async (rawApplication: ApplicationNested) => {
 
 export const mechanizeDockerContainer = async (
 	rawApplication: ApplicationNested,
+	sourceRevision?: string,
 ) => {
 	const application = await withResolvedVaultRefs(rawApplication);
 	const {
@@ -117,7 +121,7 @@ export const mechanizeDockerContainer = async (
 		StopGracePeriod,
 		EndpointSpec,
 		Ulimits,
-	} = generateConfigContainer(application);
+	} = generateConfigContainer(application, sourceRevision);
 
 	const bindsMount = generateBindMounts(mounts);
 	const filesMount = generateFileMounts(appName, application);

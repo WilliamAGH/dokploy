@@ -15,6 +15,10 @@ import type { PostgresNested } from "../databases/postgres";
 import type { RedisNested } from "../databases/redis";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
 import { spawnAsync } from "../process/spawnAsync";
+import {
+	sourceRevisionLabelPlaceholder,
+	sourceRevisionSchema,
+} from "../providers/git";
 import { getRemoteDocker } from "../servers/remote-docker";
 
 interface RegistryAuth {
@@ -625,6 +629,7 @@ export const calculateResources = ({
 
 export const generateConfigContainer = (
 	application: Partial<ApplicationNested>,
+	sourceRevision?: string,
 ) => {
 	const {
 		healthCheckSwarm,
@@ -642,6 +647,21 @@ export const generateConfigContainer = (
 	} = application;
 
 	const haveMounts = mounts && mounts.length > 0;
+	const labels = labelsSwarm
+		? Object.fromEntries(
+				Object.entries(labelsSwarm).map(([key, value]) => {
+					if (value !== sourceRevisionLabelPlaceholder) {
+						return [key, value];
+					}
+					if (sourceRevision === undefined) {
+						throw new Error(
+							"DOKPLOY_SOURCE_REVISION requires a deployment source revision",
+						);
+					}
+					return [key, sourceRevisionSchema.parse(sourceRevision)];
+				}),
+			)
+		: undefined;
 
 	return {
 		...(healthCheckSwarm && {
@@ -660,8 +680,8 @@ export const generateConfigContainer = (
 						Constraints: haveMounts ? ["node.role==manager"] : [],
 					},
 				}),
-		...(labelsSwarm && {
-			Labels: labelsSwarm,
+		...(labels && {
+			Labels: labels,
 		}),
 		...(modeSwarm
 			? {

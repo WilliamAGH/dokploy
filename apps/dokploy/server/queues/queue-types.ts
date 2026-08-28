@@ -3,6 +3,7 @@ type DeployJob =
 			applicationId: string;
 			titleLog: string;
 			descriptionLog: string;
+			sourceRevision?: string;
 			server?: boolean;
 			type: "deploy" | "redeploy";
 			applicationType: "application";

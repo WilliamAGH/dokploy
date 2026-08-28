@@ -10,7 +10,10 @@ import {
 import type { ApplicationNested } from ".";
 import { createEnvFileCommand } from "./utils";
 
-export const getDockerCommand = (application: ApplicationNested) => {
+export const getDockerCommand = (
+	application: ApplicationNested,
+	sourceRevision?: string,
+) => {
 	const {
 		appName,
 		env,
@@ -50,6 +53,9 @@ export const getDockerCommand = (application: ApplicationNested) => {
 
 		for (const arg of args) {
 			commandArgs.push("--build-arg", arg);
+		}
+		if (sourceRevision) {
+			commandArgs.push("--build-arg", `SOURCE_REVISION=${sourceRevision}`);
 		}
 
 		const secrets = getEnvironmentVariablesObject(

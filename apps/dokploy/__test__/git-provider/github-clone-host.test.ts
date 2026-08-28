@@ -30,7 +30,7 @@ const provider = (githubUrl: string) => ({
 	githubInstallationId: "42",
 });
 
-const clone = async () => {
+const clone = async (sourceRevision?: string) => {
 	const command = await cloneGithubRepository({
 		appName: "my-app",
 		owner: "acme",
@@ -39,6 +39,7 @@ const clone = async () => {
 		githubId: "gh-1",
 		enableSubmodules: false,
 		serverId: null,
+		sourceRevision,
 	});
 	return command.replace(/\\/g, "");
 };
@@ -102,5 +103,19 @@ describe("cloneGithubRepository host", () => {
 		expect(command).toContain(
 			"https://oauth2:gh-token@github.com/acme/web.git",
 		);
+	});
+
+	it("pins the checkout to the webhook revision", async () => {
+		mockFindGithubById.mockResolvedValue(provider("https://github.com"));
+		const sourceRevision = "0123456789abcdef0123456789abcdef01234567";
+
+		const command = await clone(sourceRevision);
+
+		expect(command).toMatch(
+			new RegExp(`git -C .+ fetch --depth 1 origin ${sourceRevision}`),
+		);
+		expect(command).toMatch(/git -C .+ checkout --detach FETCH_HEAD/);
+		expect(command).not.toContain("git clone --branch");
+		expect(command).toContain("rev-parse HEAD");
 	});
 });

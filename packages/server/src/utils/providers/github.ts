@@ -8,6 +8,7 @@ import { TRPCError } from "@trpc/server";
 import { Octokit } from "octokit";
 import { quote } from "shell-quote";
 import type { z } from "zod";
+import { sourceRevisionSchema } from "./git";
 
 export const DEFAULT_GITHUB_URL = "https://github.com";
 export const DEFAULT_GITHUB_API_URL = "https://api.github.com";
@@ -187,6 +188,7 @@ interface CloneGithubRepository {
 	enableSubmodules: boolean;
 	serverId: string | null;
 	outputPathOverride?: string;
+	sourceRevision?: string;
 }
 export const cloneGithubRepository = async ({
 	type = "application",
@@ -203,6 +205,7 @@ export const cloneGithubRepository = async ({
 		enableSubmodules,
 		serverId,
 		outputPathOverride,
+		sourceRevision,
 	} = entity;
 	const { APPLICATIONS_PATH, COMPOSE_PATH } = paths(!!serverId);
 
@@ -223,6 +226,9 @@ export const cloneGithubRepository = async ({
 	const githubProvider = await findGithubById(githubId);
 	const basePath = isCompose ? COMPOSE_PATH : APPLICATIONS_PATH;
 	const outputPath = outputPathOverride ?? join(basePath, appName, "code");
+	const expectedSourceRevision = sourceRevisionSchema
+		.optional()
+		.parse(sourceRevision);
 	const octokit = authGithub(githubProvider);
 	const token = await getGithubToken(octokit);
 	const cloneBase = new URL(normalizeGithubUrl(githubProvider.githubUrl));
@@ -232,7 +238,18 @@ export const cloneGithubRepository = async ({
 	const cloneUrl = `${cloneBase.protocol}//oauth2:${token}@${repoclone}`;
 
 	command += `echo ${quote([`Cloning Repo ${repoclone} to ${outputPath}: ✅`])};`;
-	command += `git clone --branch ${quote([String(branch ?? "")])} --depth 1 ${enableSubmodules ? "--recurse-submodules" : ""} ${quote([String(cloneUrl ?? "")])} ${quote([String(outputPath ?? "")])} --progress;`;
+	if (expectedSourceRevision) {
+		command += `git init ${quote([outputPath])};`;
+		command += `git -C ${quote([outputPath])} remote add origin ${quote([String(cloneUrl ?? "")])};`;
+		command += `git -C ${quote([outputPath])} fetch --depth 1 origin ${quote([expectedSourceRevision])};`;
+		command += `git -C ${quote([outputPath])} checkout --detach FETCH_HEAD;`;
+		command += `test "$(git -C ${quote([outputPath])} rev-parse HEAD)" = ${quote([expectedSourceRevision])};`;
+		if (enableSubmodules) {
+			command += `git -C ${quote([outputPath])} submodule update --init --recursive;`;
+		}
+	} else {
+		command += `git clone --branch ${quote([String(branch ?? "")])} --depth 1 ${enableSubmodules ? "--recurse-submodules" : ""} ${quote([String(cloneUrl ?? "")])} ${quote([String(outputPath ?? "")])} --progress;`;
+	}
 
 	return command;
 };

@@ -16,10 +16,15 @@ import {
 	prepareEnvironmentVariables,
 } from "../utils/docker/utils";
 import { execAsync, execAsyncRemote } from "../utils/process/execAsync";
+import {
+	sourceRevisionLabelPlaceholder,
+	sourceRevisionSchema,
+} from "../utils/providers/git";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
 import { withResolvedVaultRefs } from "../utils/vault";
 import { type Application, findApplicationById } from "./application";
 import { findDeploymentById } from "./deployment";
+import { getImageConfig } from "./docker-image";
 import type { Environment } from "./environment";
 import type { Mount } from "./mount";
 import { resolveServiceNetworks } from "./network";
@@ -71,12 +76,26 @@ export const createRollback = async (
 		const rollbackRegistry = rest.rollbackRegistryId
 			? await findRegistryByIdWithCredentials(rest.rollbackRegistryId)
 			: rest.rollbackRegistry;
+		const requiresSourceRevision = Object.values(
+			rest.labelsSwarm ?? {},
+		).includes(sourceRevisionLabelPlaceholder);
+		const sourceRevision = requiresSourceRevision
+			? sourceRevisionSchema.parse(
+					(
+						await getImageConfig(
+							`${input.appName}:latest`,
+							rest.buildServerId || rest.serverId || undefined,
+						)
+					).Config?.Labels?.["org.opencontainers.image.revision"],
+				)
+			: undefined;
 
 		const fullContextWithCredentials = {
 			...rest,
 			registry,
 			buildRegistry,
 			rollbackRegistry,
+			sourceRevision,
 		};
 
 		await tx
@@ -210,6 +229,7 @@ const rollbackApplication = async (
 		mounts: Mount[];
 		ports: Port[];
 		rollbackRegistry?: Registry | null;
+		sourceRevision?: string;
 	},
 ) => {
 	if (!fullContext) {
@@ -265,6 +285,7 @@ const rollbackApplication = async (
 		Ulimits,
 	} = generateConfigContainer(
 		resolvedContext as Parameters<typeof generateConfigContainer>[0],
+		resolvedContext.sourceRevision,
 	);
 
 	const bindsMount = generateBindMounts(mounts);

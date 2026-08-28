@@ -1,6 +1,8 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const sourceRevision = "89abcdef0123456789abcdef0123456789abcdef";
+
 const mocks = vi.hoisted(() => ({
 	eq: vi.fn((field: string, value: unknown) => ({ field, value })),
 	and: vi.fn((...conditions: Array<{ field: string; value: unknown }>) => ({
@@ -130,8 +132,9 @@ const createPushRequest = (
 				id: 12345,
 			},
 			ref: `refs/heads/${branch}`,
-			after: "abc123",
+			after: sourceRevision,
 			head_commit: {
+				id: sourceRevision,
 				message: "fix: trigger deployment",
 			},
 			commits: [
@@ -151,11 +154,11 @@ const createPushRequest = (
 
 const createTagRequest = (tagName: string) => {
 	const req = createPushRequest("main") as unknown as {
-		body: { ref: string; head_commit: { message: string } };
+		body: { ref: string; head_commit: null };
 	};
 
 	req.body.ref = `refs/tags/${tagName}`;
-	req.body.head_commit.message = `release: ${tagName}`;
+	req.body.head_commit = null;
 
 	return req as unknown as NextApiRequest;
 };
@@ -214,6 +217,7 @@ describe("GitHub app webhook auto-deploy", () => {
 			expect.objectContaining({
 				applicationId: "application-id",
 				applicationType: "application",
+				sourceRevision,
 				type: "deploy",
 			}),
 			expect.objectContaining({
@@ -255,16 +259,19 @@ describe("GitHub app webhook auto-deploy", () => {
 
 		expect(mocks.queueAdd).toHaveBeenCalledWith(
 			"deployments",
-			expect.objectContaining({
-				applicationType: "compose",
-				composeId: "compose-id",
-				type: "deploy",
-			}),
+			expect.not.objectContaining({ sourceRevision }),
 			expect.objectContaining({
 				removeOnComplete: true,
 				removeOnFail: true,
 			}),
 		);
+		const composeJob = mocks.queueAdd.mock.calls[0]?.[1];
+		expect(composeJob).toMatchObject({
+			applicationType: "compose",
+			composeId: "compose-id",
+			type: "deploy",
+		});
+		expect(composeJob).not.toHaveProperty("sourceRevision");
 		expect(res.status).toHaveBeenCalledWith(200);
 		expect(res.json).toHaveBeenCalledWith({ message: "Deployed 1 apps" });
 	});
@@ -300,6 +307,7 @@ describe("GitHub app webhook auto-deploy", () => {
 			expect.objectContaining({
 				applicationId: "application-id",
 				applicationType: "application",
+				sourceRevision,
 				titleLog: "Tag created: v1.0.0",
 				type: "deploy",
 			}),
