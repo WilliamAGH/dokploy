@@ -2,7 +2,13 @@ import { execFileSync, execSync } from "node:child_process";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { defaultCommand, reportDockerVersion } from "@dokploy/server";
+import {
+	createTraefikInstance,
+	defaultCommand,
+	reportDockerVersion,
+	TRAEFIK_IMAGE,
+} from "@dokploy/server";
+import { quote } from "shell-quote";
 import { describe, expect, it } from "vitest";
 
 const resolveBin = (name: string) =>
@@ -95,4 +101,11 @@ describe("defaultCommand", () => {
 			);
 		},
 	);
+
+	it("uses the configured full Traefik image reference", () => {
+		const script = createTraefikInstance();
+		expect(script).toContain(`TRAEFIK_IMAGE=${quote([TRAEFIK_IMAGE])}`);
+		expect(script).toContain('"$TRAEFIK_IMAGE"');
+		expect(script).not.toContain("traefik:v$TRAEFIK_VERSION");
+	});
 });

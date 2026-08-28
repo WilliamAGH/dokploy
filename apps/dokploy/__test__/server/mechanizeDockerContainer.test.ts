@@ -1,9 +1,11 @@
+import { SWARM_READINESS_TRAEFIK_IMAGE } from "@dokploy/server/setup/traefik-setup";
 import type { ApplicationNested } from "@dokploy/server/utils/builders";
 import { mechanizeDockerContainer } from "@dokploy/server/utils/builders";
 import { sourceRevisionLabelPlaceholder } from "@dokploy/server/utils/providers/git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type MockCreateServiceOptions = {
+	Labels?: Record<string, string>;
 	TaskTemplate?: {
 		ContainerSpec?: {
 			Labels?: Record<string, string>;
@@ -14,24 +16,41 @@ type MockCreateServiceOptions = {
 	[key: string]: unknown;
 };
 
-const { inspectMock, getServiceMock, createServiceMock, getRemoteDockerMock } =
-	vi.hoisted(() => {
-		const inspect = vi.fn<() => Promise<never>>();
-		const getService = vi.fn(() => ({ inspect }));
-		const createService = vi.fn<
-			(opts: MockCreateServiceOptions) => Promise<void>
-		>(async () => undefined);
-		const getRemoteDocker = vi.fn(async () => ({
-			getService,
-			createService,
-		}));
-		return {
-			inspectMock: inspect,
-			getServiceMock: getService,
-			createServiceMock: createService,
-			getRemoteDockerMock: getRemoteDocker,
-		};
-	});
+const {
+	assertSwarmReadinessTraefikRuntimeMock,
+	inspectMock,
+	getServiceMock,
+	createServiceMock,
+	getRemoteDockerMock,
+} = vi.hoisted(() => {
+	const assertSwarmReadinessTraefikRuntime = vi.fn();
+	const inspect = vi.fn<() => Promise<never>>();
+	const getService = vi.fn(() => ({ inspect }));
+	const createService = vi.fn<
+		(opts: MockCreateServiceOptions) => Promise<void>
+	>(async () => undefined);
+	const getRemoteDocker = vi.fn(async () => ({
+		getService,
+		createService,
+	}));
+	return {
+		assertSwarmReadinessTraefikRuntimeMock: assertSwarmReadinessTraefikRuntime,
+		inspectMock: inspect,
+		getServiceMock: getService,
+		createServiceMock: createService,
+		getRemoteDockerMock: getRemoteDocker,
+	};
+});
+
+vi.mock("@dokploy/server/setup/traefik-setup", async () => {
+	const actual = await vi.importActual<
+		typeof import("@dokploy/server/setup/traefik-setup")
+	>("@dokploy/server/setup/traefik-setup");
+	return {
+		...actual,
+		assertSwarmReadinessTraefikRuntime: assertSwarmReadinessTraefikRuntimeMock,
+	};
+});
 
 vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 	getRemoteDocker: getRemoteDockerMock,
@@ -59,6 +78,10 @@ const createApplication = (
 			env: null,
 		},
 		replicas: 1,
+		domains: [],
+		readinessCheckSwarm: null,
+		redirects: [],
+		security: [],
 		stopGracePeriodSwarm: 0,
 		ulimitsSwarm: null,
 		serverId: "server-id",
@@ -67,6 +90,9 @@ const createApplication = (
 
 describe("mechanizeDockerContainer", () => {
 	beforeEach(() => {
+		vi.stubEnv("TRAEFIK_IMAGE", SWARM_READINESS_TRAEFIK_IMAGE);
+		assertSwarmReadinessTraefikRuntimeMock.mockReset();
+		assertSwarmReadinessTraefikRuntimeMock.mockResolvedValue(undefined);
 		inspectMock.mockReset();
 		inspectMock.mockRejectedValue(new Error("service not found"));
 		getServiceMock.mockClear();
@@ -191,6 +217,78 @@ describe("mechanizeDockerContainer", () => {
 			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
 			"test.static": "unchanged",
 		});
+		expect(firstSettings?.Labels).toBeUndefined();
+	});
+
+	it("keeps task labels separate from Dokploy-owned readiness routing labels", async () => {
+		const application = createApplication({
+			appName: "crawl4ai",
+			labelsSwarm: { "otel.service.name": "crawl4ai" },
+			readinessCheckSwarm: {
+				Path: "/health",
+				Interval: 500_000_000,
+				UnhealthyInterval: 250_000_000,
+				Timeout: 400_000_000,
+				Status: 200,
+			},
+			domains: [
+				{
+					domainId: "domain-id",
+					host: "crawl.example.com",
+					https: true,
+					port: 11235,
+					customEntrypoint: null,
+					path: "/",
+					serviceName: "compose-only-name",
+					domainType: "application",
+					uniqueConfigKey: 7,
+					createdAt: "",
+					composeId: null,
+					customCertResolver: null,
+					applicationId: "application-id",
+					previewDeploymentId: null,
+					certificateType: "letsencrypt",
+					internalPath: "/",
+					stripPath: false,
+					middlewares: [],
+					forwardAuthEnabled: false,
+					enabled: true,
+				},
+			],
+		});
+
+		await mechanizeDockerContainer(application);
+
+		const settings = createServiceMock.mock.calls[0]?.[0];
+		expect(settings?.TaskTemplate?.ContainerSpec?.Labels).toEqual({
+			"otel.service.name": "crawl4ai",
+		});
+		expect(settings?.Labels).toMatchObject({
+			"traefik.enable": "true",
+			"traefik.swarm.lbswarm": "false",
+			"traefik.http.routers.crawl4ai-7-web.service": "crawl4ai-7@swarm",
+			"traefik.http.services.crawl4ai-7.loadbalancer.healthcheck.initialstatus":
+				"down",
+		});
+		expect(JSON.stringify(settings?.Labels)).not.toContain("compose-only-name");
+	});
+
+	it("rejects readiness before deployment when the task omits the ingress network", async () => {
+		const application = createApplication({
+			readinessCheckSwarm: {
+				Path: "/health",
+				Interval: 500_000_000,
+				UnhealthyInterval: 250_000_000,
+				Timeout: 400_000_000,
+				Status: 200,
+			},
+			networkSwarm: [{ Target: "isolated" }],
+		});
+
+		await expect(mechanizeDockerContainer(application)).rejects.toThrow(
+			"requires the dokploy-network ingress network",
+		);
+		expect(createServiceMock).not.toHaveBeenCalled();
 	});
 
 	it("rejects unresolved or malformed source revision labels before creating a service", async () => {

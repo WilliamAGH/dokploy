@@ -7,6 +7,7 @@ import {
 	deployments as deploymentsSchema,
 	rollbacks,
 } from "../db/schema";
+import type { ApplicationNested } from "../utils/builders";
 import { getRegistryTag } from "../utils/cluster/upload";
 import {
 	calculateResources,
@@ -21,6 +22,10 @@ import {
 	sourceRevisionSchema,
 } from "../utils/providers/git";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
+import {
+	assertSwarmReadinessRouting,
+	createApplicationRoutingLabels,
+} from "../utils/traefik/domain";
 import { withResolvedVaultRefs } from "../utils/vault";
 import { type Application, findApplicationById } from "./application";
 import { findDeploymentById } from "./deployment";
@@ -198,6 +203,7 @@ export const rollback = async (rollbackId: string) => {
 		result.image || "",
 		application.serverId,
 		result.fullContext,
+		application,
 	);
 };
 
@@ -231,9 +237,15 @@ const rollbackApplication = async (
 		rollbackRegistry?: Registry | null;
 		sourceRevision?: string;
 	},
+	routingApplication?: ApplicationNested,
 ) => {
 	if (!fullContext) {
 		throw new Error("Full context is required for rollback");
+	}
+	if (!routingApplication) {
+		throw new Error(
+			"Current application routing context is required for rollback",
+		);
 	}
 
 	const resolvedContext = await withResolvedVaultRefs(fullContext);
@@ -273,6 +285,7 @@ const rollbackApplication = async (
 	const resolvedNetworks = await resolveServiceNetworks(
 		resolvedContext as Parameters<typeof resolveServiceNetworks>[0],
 	);
+	await assertSwarmReadinessRouting(routingApplication, resolvedNetworks);
 
 	const {
 		HealthCheck,
@@ -307,6 +320,7 @@ const rollbackApplication = async (
 			serveraddress: rollbackRegistry?.registryUrl || "",
 		},
 		Name: appName,
+		Labels: createApplicationRoutingLabels(routingApplication),
 		TaskTemplate: {
 			ContainerSpec: {
 				HealthCheck,

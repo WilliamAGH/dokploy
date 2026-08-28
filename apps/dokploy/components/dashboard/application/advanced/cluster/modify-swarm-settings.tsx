@@ -24,6 +24,7 @@ import {
 	ModeForm,
 	NetworkForm,
 	PlacementForm,
+	ReadinessRoutingForm,
 	RestartPolicyForm,
 	RollbackConfigForm,
 	StopGracePeriodForm,
@@ -38,6 +39,13 @@ type MenuItem = {
 };
 
 const menuItems: MenuItem[] = [
+	{
+		id: "readiness-routing",
+		label: "Readiness Routing",
+		description: "Gate application traffic on readiness",
+		docDescription:
+			"Route application domains through Traefik's Swarm provider using direct task IPs. Active health checks keep new and unhealthy tasks out of the routing pool.",
+	},
 	{
 		id: "health-check",
 		label: "Health Check",
@@ -159,36 +167,44 @@ export const AddSwarmSettings = ({ id, type }: Props) => {
 					<div className="w-64 shrink-0 border-r pr-4 overflow-y-auto">
 						<nav className="space-y-1">
 							<TooltipProvider>
-								{menuItems.map((item) => (
-									<Tooltip key={item.id}>
-										<TooltipTrigger asChild>
-											<button
-												type="button"
-												onClick={() => setActiveMenu(item.id)}
-												className={cn(
-													"w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
-													activeMenu === item.id
-														? "bg-primary text-primary-foreground"
-														: "hover:bg-muted",
-												)}
-											>
-												<div className="font-medium">{item.label}</div>
-												<div className="text-xs opacity-80">
-													{item.description}
-												</div>
-											</button>
-										</TooltipTrigger>
-										<TooltipContent side="right" className="max-w-xs">
-											<p className="text-xs">{item.docDescription}</p>
-										</TooltipContent>
-									</Tooltip>
-								))}
+								{menuItems
+									.filter(
+										(item) =>
+											type === "application" || item.id !== "readiness-routing",
+									)
+									.map((item) => (
+										<Tooltip key={item.id}>
+											<TooltipTrigger asChild>
+												<button
+													type="button"
+													onClick={() => setActiveMenu(item.id)}
+													className={cn(
+														"w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+														activeMenu === item.id
+															? "bg-primary text-primary-foreground"
+															: "hover:bg-muted",
+													)}
+												>
+													<div className="font-medium">{item.label}</div>
+													<div className="text-xs opacity-80">
+														{item.description}
+													</div>
+												</button>
+											</TooltipTrigger>
+											<TooltipContent side="right" className="max-w-xs">
+												<p className="text-xs">{item.docDescription}</p>
+											</TooltipContent>
+										</Tooltip>
+									))}
 							</TooltipProvider>
 						</nav>
 					</div>
 
 					{/* Right Column - Form */}
 					<div className="flex-1 overflow-y-auto">
+						{activeMenu === "readiness-routing" && type === "application" && (
+							<ReadinessRoutingForm applicationId={id} />
+						)}
 						{activeMenu === "health-check" && (
 							<HealthCheckForm id={id} type={type} />
 						)}

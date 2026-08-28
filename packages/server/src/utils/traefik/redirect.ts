@@ -6,6 +6,7 @@ import {
 	writeTraefikConfig,
 	writeTraefikConfigRemote,
 } from "./application";
+import { usesSwarmReadinessRouting } from "./domain";
 import type { FileConfig } from "./file-types";
 import {
 	addMiddleware,
@@ -76,6 +77,14 @@ export const createRedirectMiddleware = async (
 			...newMiddleware,
 		};
 	}
+	if (usesSwarmReadinessRouting(application)) {
+		if (serverId) {
+			await writeTraefikConfigRemote(config, "middlewares", serverId);
+		} else {
+			writeMiddleware(config);
+		}
+		return;
+	}
 
 	let appConfig: FileConfig;
 
@@ -113,20 +122,23 @@ export const removeRedirectMiddleware = async (
 	if (config?.http?.middlewares?.[middlewareName]) {
 		delete config.http.middlewares[middlewareName];
 	}
-	let appConfig: FileConfig;
-	if (serverId) {
-		appConfig = await loadOrCreateConfigRemote(serverId, appName);
-	} else {
-		appConfig = loadOrCreateConfig(appName);
+	let appConfig: FileConfig | undefined;
+	if (!usesSwarmReadinessRouting(application)) {
+		appConfig = serverId
+			? await loadOrCreateConfigRemote(serverId, appName)
+			: loadOrCreateConfig(appName);
+		deleteMiddleware(appConfig, middlewareName);
 	}
-
-	deleteMiddleware(appConfig, middlewareName);
 
 	if (serverId) {
 		await writeTraefikConfigRemote(config, "middlewares", serverId);
-		await writeTraefikConfigRemote(appConfig, appName, serverId);
+		if (appConfig) {
+			await writeTraefikConfigRemote(appConfig, appName, serverId);
+		}
 	} else {
-		writeTraefikConfig(appConfig, appName);
+		if (appConfig) {
+			writeTraefikConfig(appConfig, appName);
+		}
 		writeMiddleware(config);
 	}
 };

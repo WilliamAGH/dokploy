@@ -26,6 +26,14 @@ export interface HealthCheckSwarm {
 	Retries?: number | undefined;
 }
 
+export interface ReadinessCheckSwarm {
+	Path: string;
+	Interval: number;
+	UnhealthyInterval: number;
+	Timeout: number;
+	Status: number;
+}
+
 export interface RestartPolicySwarm {
 	Condition?: string | undefined;
 	Delay?: number | undefined;
@@ -105,6 +113,24 @@ export const HealthCheckSwarmSchema = z
 		Retries: z.number().optional(),
 	})
 	.strict();
+
+const nanoseconds = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
+
+export const ReadinessCheckSwarmSchema = z
+	.object({
+		Path: z
+			.string()
+			.regex(/^\/\S*$/, "Path must start with / and contain no spaces"),
+		Interval: nanoseconds,
+		UnhealthyInterval: nanoseconds,
+		Timeout: nanoseconds,
+		Status: z.number().int().min(200).max(599),
+	})
+	.strict()
+	.refine(({ Interval, Timeout }) => Interval > Timeout, {
+		message: "Interval must be greater than Timeout",
+		path: ["Interval"],
+	});
 
 export const RestartPolicySwarmSchema = z
 	.object({

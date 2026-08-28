@@ -1,6 +1,10 @@
 import { db } from "@dokploy/server/db";
 import { type apiCreateSecurity, security } from "@dokploy/server/db/schema";
 import {
+	synchronizeApplicationRouting,
+	usesSwarmReadinessRouting,
+} from "@dokploy/server/utils/traefik/domain";
+import {
 	createSecurityMiddleware,
 	removeSecurityMiddleware,
 } from "@dokploy/server/utils/traefik/security";
@@ -47,6 +51,10 @@ export const createSecurity = async (
 			await createSecurityMiddleware(application, securityResponse);
 			return true;
 		});
+		const application = await findApplicationById(data.applicationId);
+		if (usesSwarmReadinessRouting(application)) {
+			await synchronizeApplicationRouting(application);
+		}
 	} catch (error) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
@@ -74,6 +82,9 @@ export const deleteSecurityById = async (securityId: string) => {
 
 		const application = await findApplicationById(result.applicationId);
 
+		if (usesSwarmReadinessRouting(application)) {
+			await synchronizeApplicationRouting(application);
+		}
 		await removeSecurityMiddleware(application, result);
 		return result;
 	} catch (error) {
@@ -120,6 +131,12 @@ export const updateSecurityById = async (
 
 			return response;
 		});
+		const application = await findApplicationById(
+			(await findSecurityById(securityId)).applicationId,
+		);
+		if (usesSwarmReadinessRouting(application)) {
+			await synchronizeApplicationRouting(application);
+		}
 	} catch (error) {
 		const message =
 			error instanceof Error ? error.message : "Error updating this security";

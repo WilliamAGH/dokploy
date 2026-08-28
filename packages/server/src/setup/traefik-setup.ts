@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -7,7 +8,12 @@ import {
 	writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import type { ContainerCreateOptions, CreateServiceOptions } from "dockerode";
+import type { Readable } from "node:stream";
+import type {
+	ContainerCreateOptions,
+	ContainerInspectInfo,
+	CreateServiceOptions,
+} from "dockerode";
 import { stringify } from "yaml";
 import { paths } from "../constants";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
@@ -21,6 +27,148 @@ export const TRAEFIK_PORT =
 export const TRAEFIK_HTTP3_PORT =
 	Number.parseInt(process.env.TRAEFIK_HTTP3_PORT!, 10) || 443;
 export const TRAEFIK_VERSION = process.env.TRAEFIK_VERSION || "3.6.25";
+export const TRAEFIK_IMAGE =
+	process.env.TRAEFIK_IMAGE || `traefik:v${TRAEFIK_VERSION}`;
+
+// Fail closed until the reviewed v3.6.25 image is published and this one
+// code-owned reference is replaced with its immutable digest.
+export const SWARM_READINESS_TRAEFIK_IMAGE =
+	"ghcr.io/williamagh/traefik@sha256:266c53de4730fcf9fa42445dd18c9ee294100e56cfffdc288656a6c48b6c48f2";
+
+export const isSwarmReadinessTraefikImage = (
+	image = process.env.TRAEFIK_IMAGE,
+) => image === SWARM_READINESS_TRAEFIK_IMAGE;
+
+type DockerClient = Awaited<ReturnType<typeof getRemoteDocker>>;
+type DockerContainer = ReturnType<DockerClient["getContainer"]>;
+
+const TRAEFIK_CONTAINER_NAME = "dokploy-traefik";
+const TRAEFIK_API_ATTEMPTS = 20;
+const TRAEFIK_API_RETRY_MS = 500;
+
+const isNotFound = (error: unknown) =>
+	(error as { statusCode?: number }).statusCode === 404;
+
+const pullTraefikImage = async (docker: DockerClient, image: string) => {
+	await new Promise<void>((resolve, reject) => {
+		docker.pull(image, {}, (error, stream) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+			docker.modem.followProgress(
+				stream as Readable,
+				(progressError: Error | null) => {
+					if (progressError) {
+						reject(progressError);
+						return;
+					}
+					resolve();
+				},
+			);
+		});
+	});
+};
+
+const readExec = async (stream: Readable) => {
+	return await new Promise<string>((resolve, reject) => {
+		let output = "";
+		stream.on("data", (chunk: Buffer) => {
+			output += chunk.toString();
+		});
+		stream.once("error", reject);
+		stream.once("end", () => resolve(output));
+		stream.resume();
+	});
+};
+
+export interface TraefikRuntimeConfig {
+	routers?: Record<string, { service?: string; status?: string }>;
+	services?: Record<
+		string,
+		{ serverStatus?: Record<string, string>; status?: string }
+	>;
+}
+
+interface TraefikOverview {
+	providers?: string[];
+}
+
+const readTraefikApi = async <T>(container: DockerContainer, path: string) => {
+	const command = await container.exec({
+		Cmd: ["wget", "-q", "-T", "1", "-O", "-", `http://127.0.0.1:8080${path}`],
+		AttachStdout: true,
+		AttachStderr: true,
+		Tty: true,
+	});
+	const output = await readExec((await command.start({})) as Readable);
+	if ((await command.inspect()).ExitCode !== 0) {
+		throw new Error("Traefik API request failed");
+	}
+	return JSON.parse(output) as T;
+};
+
+const readTraefikRuntime = async (container: DockerContainer) =>
+	await readTraefikApi<TraefikRuntimeConfig>(container, "/api/rawdata");
+
+const waitForTraefikApi = async (container: DockerContainer) => {
+	for (let attempt = 0; attempt < TRAEFIK_API_ATTEMPTS; attempt += 1) {
+		const state = (await container.inspect()).State;
+		if (!state.Running && !state.Restarting) {
+			throw new Error(
+				`Traefik stopped before its API became ready: ${state.Error}`,
+			);
+		}
+
+		try {
+			const overview = await readTraefikApi<TraefikOverview>(
+				container,
+				"/api/overview",
+			);
+			if (
+				["Swarm", "Docker", "File"].every((provider) =>
+					overview.providers?.includes(provider),
+				)
+			) {
+				return;
+			}
+		} catch {
+			// The API is expected to refuse connections briefly during startup.
+		}
+
+		await new Promise((resolve) => setTimeout(resolve, TRAEFIK_API_RETRY_MS));
+	}
+
+	throw new Error("Traefik API did not become ready");
+};
+
+export const readTraefikRuntimeConfig = async (serverId?: string) =>
+	await readTraefikRuntime(
+		(await getRemoteDocker(serverId)).getContainer(TRAEFIK_CONTAINER_NAME),
+	);
+
+export const assertSwarmReadinessTraefikRuntime = async (serverId?: string) => {
+	if (
+		process.env.NODE_ENV === "development" ||
+		!isSwarmReadinessTraefikImage()
+	) {
+		throw new Error(
+			"Swarm readiness routing requires the supported immutable Traefik image",
+		);
+	}
+
+	const inspect = await (await getRemoteDocker(serverId))
+		.getContainer(TRAEFIK_CONTAINER_NAME)
+		.inspect();
+	if (
+		!inspect.State.Running ||
+		inspect.Config.Image !== SWARM_READINESS_TRAEFIK_IMAGE
+	) {
+		throw new Error(
+			"Swarm readiness routing requires the supported Traefik image to be running",
+		);
+	}
+};
 
 type AccessLogOutput = Pick<
 	NonNullable<MainTraefikConfig["accessLog"]>,
@@ -50,14 +198,46 @@ export interface TraefikOptions {
 	}[];
 }
 
-export const initializeStandaloneTraefik = async ({
+const reconcileStandaloneTraefik = async ({
 	env,
 	serverId,
-	additionalPorts = [],
+	additionalPorts,
 }: TraefikOptions = {}) => {
 	const { MAIN_TRAEFIK_PATH, DYNAMIC_TRAEFIK_PATH } = paths(!!serverId);
-	const imageName = `traefik:v${TRAEFIK_VERSION}`;
-	const containerName = "dokploy-traefik";
+	const imageName = TRAEFIK_IMAGE;
+	const docker = await getRemoteDocker(serverId);
+	let currentContainer = docker.getContainer(TRAEFIK_CONTAINER_NAME);
+	let currentInspect: ContainerInspectInfo | undefined;
+	try {
+		currentInspect = await currentContainer.inspect();
+		currentContainer = docker.getContainer(currentInspect.Id);
+	} catch (error) {
+		if (!isNotFound(error)) {
+			throw error;
+		}
+	}
+
+	const candidateName = `${TRAEFIK_CONTAINER_NAME}-candidate-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+	const currentPortBindings = (currentInspect?.HostConfig.PortBindings ??
+		{}) as Record<string, Array<{ HostPort: string }> | null>;
+	const desiredAdditionalPorts =
+		additionalPorts ??
+		Object.entries(currentPortBindings).flatMap(([portKey, bindings]) => {
+			const [targetPortText, protocol = "tcp"] = portKey.split("/");
+			const targetPort = Number.parseInt(targetPortText ?? "", 10);
+			const isDefaultPort =
+				(targetPort === TRAEFIK_PORT && protocol === "tcp") ||
+				(targetPort === TRAEFIK_SSL_PORT && protocol === "tcp") ||
+				(targetPort === TRAEFIK_HTTP3_PORT && protocol === "udp");
+			if (Number.isNaN(targetPort) || isDefaultPort) {
+				return [];
+			}
+			return (bindings ?? []).map((binding) => ({
+				targetPort,
+				publishedPort: Number.parseInt(binding.HostPort, 10),
+				protocol,
+			}));
+		});
 
 	const exposedPorts: Record<string, {}> = {
 		[`${TRAEFIK_PORT}/tcp`]: {},
@@ -73,7 +253,7 @@ export const initializeStandaloneTraefik = async ({
 		],
 	};
 
-	const enableDashboard = additionalPorts.some(
+	const enableDashboard = desiredAdditionalPorts.some(
 		(port) => port.targetPort === 8080,
 	);
 
@@ -82,19 +262,22 @@ export const initializeStandaloneTraefik = async ({
 		portBindings["8080/tcp"] = [{ HostPort: "8080" }];
 	}
 
-	for (const port of additionalPorts) {
+	for (const port of desiredAdditionalPorts) {
 		const portKey = `${port.targetPort}/${port.protocol ?? "tcp"}`;
 		exposedPorts[portKey] = {};
 		portBindings[portKey] = [{ HostPort: port.publishedPort.toString() }];
 	}
 
 	const settings: ContainerCreateOptions = {
-		name: containerName,
+		name: candidateName,
 		Image: imageName,
 		NetworkingConfig: {
-			EndpointsConfig: {
-				"dokploy-network": {},
-			},
+			EndpointsConfig: Object.fromEntries(
+				[
+					"dokploy-network",
+					...Object.keys(currentInspect?.NetworkSettings.Networks ?? {}),
+				].map((network) => [network, {}]),
+			),
 		},
 		ExposedPorts: exposedPorts,
 		HostConfig: {
@@ -108,31 +291,80 @@ export const initializeStandaloneTraefik = async ({
 			],
 			PortBindings: portBindings,
 		},
-		Env: env,
+		Env: env ?? currentInspect?.Config.Env,
 	};
 
-	const docker = await getRemoteDocker(serverId);
+	await pullTraefikImage(docker, imageName);
+	const candidate = await docker.createContainer(settings);
+	const currentWasRunning = Boolean(
+		currentInspect?.State.Running || currentInspect?.State.Restarting,
+	);
+	let currentRenamed = false;
 	try {
-		await docker.pull(imageName);
-		await new Promise((resolve) => setTimeout(resolve, 3000));
-		console.log("Traefik Image Pulled ✅");
-	} catch (error) {
-		console.log("Traefik Image Not Found: Pulling ", error);
-	}
-	try {
-		const container = docker.getContainer(containerName);
-		await container.remove({ force: true });
-		await new Promise((resolve) => setTimeout(resolve, 5000));
-	} catch {}
+		if (currentInspect) {
+			if (currentWasRunning) {
+				await currentContainer.stop();
+			}
+			await currentContainer.rename({
+				name: `${TRAEFIK_CONTAINER_NAME}-rollback-${currentInspect.Id.slice(0, 12)}`,
+			});
+			currentRenamed = true;
+		}
 
-	try {
-		await docker.createContainer(settings);
-		const newContainer = docker.getContainer(containerName);
-		await newContainer.start();
+		await candidate.rename({ name: TRAEFIK_CONTAINER_NAME });
+		await candidate.start();
+		await waitForTraefikApi(candidate);
 		console.log("Traefik Started ✅");
 	} catch (error) {
-		console.log("Traefik Not Found: Starting ", error);
+		const recoveryErrors: unknown[] = [];
+		try {
+			await candidate.remove({ force: true });
+		} catch (recoveryError) {
+			if (!isNotFound(recoveryError)) {
+				recoveryErrors.push(recoveryError);
+			}
+		}
+
+		if (currentInspect) {
+			try {
+				if (currentRenamed) {
+					await currentContainer.rename({ name: TRAEFIK_CONTAINER_NAME });
+				}
+				if (currentWasRunning) {
+					await currentContainer.start();
+					await waitForTraefikApi(currentContainer);
+				}
+			} catch (recoveryError) {
+				recoveryErrors.push(recoveryError);
+			}
+		}
+
+		if (recoveryErrors.length > 0) {
+			throw new AggregateError(
+				[error, ...recoveryErrors],
+				"Traefik reconciliation and automatic restoration failed",
+			);
+		}
+		throw error;
 	}
+};
+
+const standaloneTraefikReconciliations = new Map<string, Promise<void>>();
+
+export const initializeStandaloneTraefik = (
+	options: TraefikOptions = {},
+): Promise<void> => {
+	const target = options.serverId ?? "local";
+	const previous = standaloneTraefikReconciliations.get(target);
+	const reconciliation = (previous ?? Promise.resolve())
+		.catch(() => undefined)
+		.then(() => reconcileStandaloneTraefik(options));
+	standaloneTraefikReconciliations.set(target, reconciliation);
+	return reconciliation.finally(() => {
+		if (standaloneTraefikReconciliations.get(target) === reconciliation) {
+			standaloneTraefikReconciliations.delete(target);
+		}
+	});
 };
 
 export const initializeTraefikService = async ({
@@ -141,7 +373,7 @@ export const initializeTraefikService = async ({
 	serverId,
 }: TraefikOptions) => {
 	const { MAIN_TRAEFIK_PATH, DYNAMIC_TRAEFIK_PATH } = paths(!!serverId);
-	const imageName = `traefik:v${TRAEFIK_VERSION}`;
+	const imageName = TRAEFIK_IMAGE;
 	const appName = "dokploy-traefik";
 
 	const settings: CreateServiceOptions = {

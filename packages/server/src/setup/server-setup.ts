@@ -13,10 +13,11 @@ import {
 	getDefaultMiddlewares,
 	getDefaultServerTraefikConfig,
 	TRAEFIK_HTTP3_PORT,
+	TRAEFIK_IMAGE,
 	TRAEFIK_PORT,
 	TRAEFIK_SSL_PORT,
-	TRAEFIK_VERSION,
 } from "@dokploy/server/setup/traefik-setup";
+import { quote } from "shell-quote";
 import slug from "slugify";
 import { Client } from "ssh2";
 import { recreateDirectory } from "../utils/filesystem/directory";
@@ -714,7 +715,7 @@ export const createTraefikInstance = () => {
 			echo "Traefik already exists ✅"
 		else
 			# Create the dokploy-traefik container
-			TRAEFIK_VERSION=${TRAEFIK_VERSION}
+			TRAEFIK_IMAGE=${quote([TRAEFIK_IMAGE])}
 			$SUDO_CMD docker run -d \
 				--name dokploy-traefik \
 				--restart always \
@@ -724,10 +725,10 @@ export const createTraefikInstance = () => {
 				-p ${TRAEFIK_SSL_PORT}:${TRAEFIK_SSL_PORT} \
 				-p ${TRAEFIK_PORT}:${TRAEFIK_PORT} \
 				-p ${TRAEFIK_HTTP3_PORT}:${TRAEFIK_HTTP3_PORT}/udp \
-				traefik:v$TRAEFIK_VERSION
+				"$TRAEFIK_IMAGE"
 
 			$SUDO_CMD docker network connect dokploy-network dokploy-traefik;
-			echo "Traefik version $TRAEFIK_VERSION installed ✅"
+			echo "Traefik image $TRAEFIK_IMAGE installed ✅"
 		fi
 	`;
 

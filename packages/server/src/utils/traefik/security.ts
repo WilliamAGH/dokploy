@@ -7,6 +7,7 @@ import {
 	writeTraefikConfig,
 	writeTraefikConfigRemote,
 } from "./application";
+import { usesSwarmReadinessRouting } from "./domain";
 import type {
 	BasicAuthMiddleware,
 	FileConfig,
@@ -52,13 +53,17 @@ export const createSecurityMiddleware = async (
 			};
 		}
 	}
-	let appConfig: FileConfig;
-
-	if (serverId) {
-		appConfig = await loadOrCreateConfigRemote(serverId, appName);
-	} else {
-		appConfig = loadOrCreateConfig(appName);
+	if (usesSwarmReadinessRouting(application)) {
+		if (serverId) {
+			await writeTraefikConfigRemote(config, "middlewares", serverId);
+		} else {
+			writeMiddleware(config);
+		}
+		return;
 	}
+	const appConfig = serverId
+		? await loadOrCreateConfigRemote(serverId, appName)
+		: loadOrCreateConfig(appName);
 	addMiddleware(appConfig, middlewareName);
 	if (serverId) {
 		await writeTraefikConfigRemote(config, "middlewares", serverId);
@@ -81,13 +86,11 @@ export const removeSecurityMiddleware = async (
 	} else {
 		config = loadMiddlewares<FileConfig>();
 	}
-	let appConfig: FileConfig;
-
-	if (serverId) {
-		appConfig = await loadOrCreateConfigRemote(serverId, appName);
-	} else {
-		appConfig = loadOrCreateConfig(appName);
-	}
+	const appConfig = usesSwarmReadinessRouting(application)
+		? undefined
+		: serverId
+			? await loadOrCreateConfigRemote(serverId, appName)
+			: loadOrCreateConfig(appName);
 	const middlewareName = `auth-${appName}`;
 
 	if (config.http?.middlewares) {
@@ -105,11 +108,13 @@ export const removeSecurityMiddleware = async (
 				if (config?.http?.middlewares?.[middlewareName]) {
 					delete config.http.middlewares[middlewareName];
 				}
-				deleteMiddleware(appConfig, middlewareName);
-				if (serverId) {
-					await writeTraefikConfigRemote(appConfig, appName, serverId);
-				} else {
-					writeTraefikConfig(appConfig, appName);
+				if (appConfig) {
+					deleteMiddleware(appConfig, middlewareName);
+					if (serverId) {
+						await writeTraefikConfigRemote(appConfig, appName, serverId);
+					} else {
+						writeTraefikConfig(appConfig, appName);
+					}
 				}
 			}
 		}

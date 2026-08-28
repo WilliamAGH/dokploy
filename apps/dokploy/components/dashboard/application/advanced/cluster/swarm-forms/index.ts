@@ -4,6 +4,7 @@ export { LabelsForm } from "./labels-form";
 export { ModeForm } from "./mode-form";
 export { NetworkForm } from "./network-form";
 export { PlacementForm } from "./placement-form";
+export { ReadinessRoutingForm } from "./readiness-routing-form";
 export { RestartPolicyForm } from "./restart-policy-form";
 export { RollbackConfigForm } from "./rollback-config-form";
 export { StopGracePeriodForm } from "./stop-grace-period-form";

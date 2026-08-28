@@ -67,6 +67,7 @@ export const removeTraefikConfig = async (
 		}
 	} catch (error) {
 		console.error(`Error removing traefik config for ${appName}:`, error);
+		throw error;
 	}
 };
 
@@ -83,6 +84,7 @@ export const removeTraefikConfigRemote = async (
 			`Error removing remote traefik config for ${appName}:`,
 			error,
 		);
+		throw error;
 	}
 };
 
@@ -270,6 +272,7 @@ export const writeTraefikConfig = (
 		fs.writeFileSync(configPath, yamlStr, "utf8");
 	} catch (e) {
 		console.error("Error saving the YAML config file:", e);
+		throw e;
 	}
 };
 
@@ -289,6 +292,7 @@ export const writeTraefikConfigRemote = async (
 		);
 	} catch (e) {
 		console.error("Error saving the YAML config file:", e);
+		throw e;
 	}
 };
 

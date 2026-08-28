@@ -6,6 +6,7 @@ import {
 	buildAppName,
 } from "@dokploy/server/db/schema";
 import { getAdvancedStats } from "@dokploy/server/monitoring/utils";
+import { readTraefikRuntimeConfig } from "@dokploy/server/setup/traefik-setup";
 import {
 	getBuildCommand,
 	mechanizeDockerContainer,
@@ -27,8 +28,10 @@ import {
 import { cloneGiteaRepository } from "@dokploy/server/utils/providers/gitea";
 import { cloneGithubRepository } from "@dokploy/server/utils/providers/github";
 import { cloneGitlabRepository } from "@dokploy/server/utils/providers/gitlab";
+import { getRemoteDocker } from "@dokploy/server/utils/servers/remote-docker";
 import { createTraefikConfig } from "@dokploy/server/utils/traefik/application";
 import { TRPCError } from "@trpc/server";
+import type { MountSettings, NetworkAttachmentConfig } from "dockerode";
 import { eq } from "drizzle-orm";
 import type { z } from "zod";
 import { encodeBase64 } from "../utils/docker/utils";
@@ -53,6 +56,155 @@ import {
 } from "./preview-deployment";
 import { validUniqueServerAppName } from "./project";
 export type Application = typeof applications.$inferSelect;
+
+const runtimeTaskLabelKeys = new Set([
+	"org.opencontainers.image.revision",
+	"otel.deployment.environment.name",
+	"otel.logs.enabled",
+	"otel.service.name",
+	"otel.service.version",
+]);
+
+type RuntimeTaskNetworkAttachment = {
+	Addresses?: string[];
+	Network?: { Spec?: { Name?: string } };
+};
+
+const runtimeRouterLabelSuffixes = [
+	".entrypoints",
+	".middlewares",
+	".rule",
+	".service",
+	".tls",
+	".tls.certresolver",
+];
+const runtimeServiceLabelSuffixes = [
+	".loadbalancer.server.port",
+	".loadbalancer.healthcheck.path",
+	".loadbalancer.healthcheck.interval",
+	".loadbalancer.healthcheck.unhealthyinterval",
+	".loadbalancer.healthcheck.timeout",
+	".loadbalancer.healthcheck.status",
+	".loadbalancer.healthcheck.initialstatus",
+];
+
+const runtimeRootLabels = (
+	appName: string,
+	labels: Record<string, string> | undefined,
+) =>
+	Object.fromEntries(
+		Object.entries(labels ?? {}).filter(
+			([key]) =>
+				key === "traefik.enable" ||
+				key === "traefik.swarm.network" ||
+				key === "traefik.swarm.lbswarm" ||
+				(key.startsWith(`traefik.http.routers.${appName}-`) &&
+					runtimeRouterLabelSuffixes.some((suffix) => key.endsWith(suffix))) ||
+				(key.startsWith(`traefik.http.services.${appName}-`) &&
+					runtimeServiceLabelSuffixes.some((suffix) => key.endsWith(suffix))) ||
+				(key.startsWith(`traefik.http.middlewares.stripprefix-${appName}-`) &&
+					key.endsWith(".stripprefix.prefixes")) ||
+				(key.startsWith(`traefik.http.middlewares.addprefix-${appName}-`) &&
+					key.endsWith(".addprefix.prefix")),
+		),
+	);
+
+const runtimeTaskLabels = (labels: Record<string, string> | undefined) =>
+	Object.fromEntries(
+		Object.entries(labels ?? {}).filter(([key]) =>
+			runtimeTaskLabelKeys.has(key),
+		),
+	);
+
+const runtimeLocalHealthCheckTest = (test: string[] | undefined) => {
+	if (
+		test?.length !== 4 ||
+		test[0] !== "CMD" ||
+		test[1] !== "curl" ||
+		test[2] !== "-f"
+	) {
+		return null;
+	}
+	try {
+		const target = new URL(test[3] ?? "");
+		if (
+			target.protocol !== "http:" ||
+			!["localhost", "127.0.0.1", "[::1]"].includes(target.hostname) ||
+			target.username ||
+			target.password ||
+			target.search ||
+			target.hash
+		) {
+			return null;
+		}
+		return test;
+	} catch {
+		return null;
+	}
+};
+
+const labelOwnerIds = (
+	labels: Record<string, string>,
+	prefix: string,
+	suffix: string,
+) =>
+	Object.keys(labels)
+		.filter((key) => key.startsWith(prefix) && key.endsWith(suffix))
+		.map((key) => key.slice(prefix.length, -suffix.length));
+
+const sanitizedServerStatus = (
+	serverStatus: Record<string, string> | undefined,
+) =>
+	Object.fromEntries(
+		Object.entries(serverStatus ?? {}).flatMap(([server, status]) => {
+			try {
+				return [[new URL(server).origin, status]];
+			} catch {
+				return [];
+			}
+		}),
+	);
+
+const runtimeTraefikRouting = async (
+	serverId: string | null,
+	rootLabels: Record<string, string>,
+) => {
+	const routerIds = labelOwnerIds(
+		rootLabels,
+		"traefik.http.routers.",
+		".rule",
+	).map((routerId) => `${routerId}@swarm`);
+	const serviceIds = labelOwnerIds(
+		rootLabels,
+		"traefik.http.services.",
+		".loadbalancer.server.port",
+	).map((serviceId) => `${serviceId}@swarm`);
+	if (routerIds.length === 0 && serviceIds.length === 0) {
+		return { routers: [], services: [] };
+	}
+
+	const runtime = await readTraefikRuntimeConfig(serverId ?? undefined);
+	return {
+		routers: routerIds.flatMap((routerId) => {
+			const router = runtime.routers?.[routerId];
+			return router
+				? [{ routerId, status: router.status, service: router.service }]
+				: [];
+		}),
+		services: serviceIds.flatMap((serviceId) => {
+			const service = runtime.services?.[serviceId];
+			return service
+				? [
+						{
+							serviceId,
+							status: service.status,
+							serverStatus: sanitizedServerStatus(service.serverStatus),
+						},
+					]
+				: [];
+		}),
+	};
+};
 
 export const createApplication = async (
 	input: z.infer<typeof apiCreateApplication>,
@@ -135,6 +287,197 @@ export const findApplicationById = async (applicationId: string) => {
 		});
 	}
 	return application;
+};
+
+export const findApplicationRuntimeServiceState = async (
+	applicationId: string,
+	organizationId: string,
+) => {
+	const application = await db.query.applications.findFirst({
+		where: eq(applications.applicationId, applicationId),
+		columns: {
+			applicationId: true,
+			appName: true,
+			name: true,
+			serverId: true,
+		},
+		with: {
+			environment: {
+				columns: {},
+				with: {
+					project: { columns: { organizationId: true } },
+				},
+			},
+		},
+	});
+	if (!application) {
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: "Application not found",
+		});
+	}
+	if (application.environment.project.organizationId !== organizationId) {
+		throw new TRPCError({
+			code: "UNAUTHORIZED",
+			message: "You are not authorized to access this application",
+		});
+	}
+
+	const dockerClient = await getRemoteDocker(application.serverId);
+	const service = await dockerClient.getService(application.appName).inspect();
+	if (!service.Spec) {
+		throw new TRPCError({
+			code: "NOT_FOUND",
+			message: "Application service not found",
+		});
+	}
+
+	const task = service.Spec.TaskTemplate;
+	const container =
+		task && "ContainerSpec" in task ? task.ContainerSpec : undefined;
+	const health = container?.HealthCheck;
+	const restart = task?.RestartPolicy;
+	const placement = task?.Placement;
+	const update = service.Spec.UpdateConfig;
+	const rollback = service.Spec.RollbackConfig;
+	const mode = service.Spec.Mode;
+	const rootLabels = runtimeRootLabels(
+		application.appName,
+		service.Spec.Labels,
+	);
+	const traefik = await runtimeTraefikRouting(application.serverId, rootLabels);
+	const tasks = await dockerClient.listTasks({
+		filters: JSON.stringify({ service: [application.appName] }),
+	});
+
+	return {
+		application: {
+			applicationId: application.applicationId,
+			appName: application.appName,
+			name: application.name,
+			serverId: application.serverId,
+		},
+		service: {
+			serviceId: service.ID,
+			name: service.Spec.Name ?? application.appName,
+			rootLabels,
+			taskLabels: runtimeTaskLabels(container?.Labels),
+			image: container?.Image ?? null,
+			replicas: mode?.Replicated?.Replicas ?? null,
+			mode: mode
+				? {
+						Replicated: mode.Replicated
+							? { Replicas: mode.Replicated.Replicas }
+							: undefined,
+						Global: mode.Global ? {} : undefined,
+						ReplicatedJob: mode.ReplicatedJob
+							? {
+									MaxConcurrent: mode.ReplicatedJob.MaxConcurrent,
+									TotalCompletions: mode.ReplicatedJob.TotalCompletions,
+								}
+							: undefined,
+						GlobalJob: mode.GlobalJob ? {} : undefined,
+					}
+				: null,
+			healthCheck: health
+				? {
+						Test: runtimeLocalHealthCheckTest(health.Test),
+						Interval: health.Interval,
+						Timeout: health.Timeout,
+						StartPeriod: health.StartPeriod,
+						Retries: health.Retries,
+					}
+				: null,
+			restartPolicy: restart
+				? {
+						Condition: restart.Condition,
+						Delay: restart.Delay,
+						MaxAttempts: restart.MaxAttempts,
+						Window: restart.Window,
+					}
+				: null,
+			placement: placement
+				? {
+						Constraints: placement.Constraints,
+						Preferences: placement.Preferences,
+						MaxReplicas: placement.MaxReplicas,
+						Platforms: placement.Platforms,
+					}
+				: null,
+			updateConfig: update
+				? {
+						Parallelism: update.Parallelism,
+						Delay: update.Delay,
+						FailureAction: update.FailureAction,
+						Monitor: update.Monitor,
+						MaxFailureRatio: update.MaxFailureRatio,
+						Order: update.Order,
+					}
+				: null,
+			rollbackConfig: rollback
+				? {
+						Parallelism: rollback.Parallelism,
+						Delay: rollback.Delay,
+						FailureAction: rollback.FailureAction,
+						Monitor: rollback.Monitor,
+						MaxFailureRatio: rollback.MaxFailureRatio,
+						Order: rollback.Order,
+					}
+				: null,
+			updateStatus: service.UpdateStatus
+				? {
+						State: service.UpdateStatus.State,
+						StartedAt: service.UpdateStatus.StartedAt,
+						CompletedAt: service.UpdateStatus.CompletedAt,
+					}
+				: null,
+			serviceStatus: service.ServiceStatus
+				? {
+						RunningTasks: service.ServiceStatus.RunningTasks,
+						DesiredTasks: service.ServiceStatus.DesiredTasks,
+						CompletedTasks: service.ServiceStatus.CompletedTasks,
+					}
+				: null,
+			stopGracePeriod: container?.StopGracePeriod ?? null,
+			networks: (task?.Networks ?? []).map(
+				(network: NetworkAttachmentConfig) => ({
+					Target: network.Target,
+					Aliases: network.Aliases,
+				}),
+			),
+			volumeMounts: (container?.Mounts ?? [])
+				.filter((mount: MountSettings) => mount.Type === "volume")
+				.map((mount: MountSettings) => ({
+					Type: mount.Type,
+					Source: mount.Source,
+					Target: mount.Target,
+					ReadOnly: mount.ReadOnly,
+				})),
+		},
+		tasks: tasks.map((serviceTask) => ({
+			taskId: serviceTask.ID,
+			slot: serviceTask.Slot,
+			nodeId: serviceTask.NodeID,
+			desiredState: serviceTask.DesiredState,
+			status: serviceTask.Status
+				? {
+						state: serviceTask.Status.State,
+						timestamp: serviceTask.Status.Timestamp,
+						containerId: serviceTask.Status.ContainerStatus?.ContainerID,
+					}
+				: null,
+			addresses: (serviceTask.NetworksAttachments ?? [])
+				.filter(
+					(attachment: RuntimeTaskNetworkAttachment) =>
+						attachment.Network?.Spec?.Name === "dokploy-network",
+				)
+				.flatMap(
+					(attachment: RuntimeTaskNetworkAttachment) =>
+						attachment.Addresses ?? [],
+				),
+		})),
+		traefik,
+	};
 };
 
 export const findApplicationByName = async (appName: string) => {

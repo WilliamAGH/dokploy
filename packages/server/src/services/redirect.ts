@@ -1,6 +1,10 @@
 import { db } from "@dokploy/server/db";
 import { type apiCreateRedirect, redirects } from "@dokploy/server/db/schema";
 import {
+	synchronizeApplicationRouting,
+	usesSwarmReadinessRouting,
+} from "@dokploy/server/utils/traefik/domain";
+import {
 	createRedirectMiddleware,
 	removeRedirectMiddleware,
 	updateRedirectMiddleware,
@@ -46,8 +50,12 @@ export const createRedirect = async (
 
 			const application = await findApplicationById(redirect.applicationId);
 
-			createRedirectMiddleware(application, redirect);
+			await createRedirectMiddleware(application, redirect);
 		});
+		const application = await findApplicationById(redirectData.applicationId);
+		if (usesSwarmReadinessRouting(application)) {
+			await synchronizeApplicationRouting(application);
+		}
 
 		return true;
 	} catch (error) {
@@ -76,6 +84,9 @@ export const removeRedirectById = async (redirectId: string) => {
 
 		const application = await findApplicationById(response.applicationId);
 
+		if (usesSwarmReadinessRouting(application)) {
+			await synchronizeApplicationRouting(application);
+		}
 		await removeRedirectMiddleware(application, response);
 
 		return response;
@@ -111,6 +122,9 @@ export const updateRedirectById = async (
 		const application = await findApplicationById(redirect.applicationId);
 
 		await updateRedirectMiddleware(application, redirect);
+		if (usesSwarmReadinessRouting(application)) {
+			await synchronizeApplicationRouting(application);
+		}
 
 		return redirect;
 	} catch (error) {

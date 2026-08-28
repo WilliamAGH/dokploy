@@ -12,6 +12,10 @@ import {
 	prepareEnvironmentVariables,
 } from "../docker/utils";
 import { getRemoteDocker } from "../servers/remote-docker";
+import {
+	assertSwarmReadinessRouting,
+	createApplicationRoutingLabels,
+} from "../traefik/domain";
 import { withResolvedVaultRefs } from "../vault";
 import { getDockerCommand } from "./docker-file";
 import { getHerokuCommand } from "./heroku";
@@ -35,6 +39,7 @@ export type ApplicationNested = InferResultType<
 		buildRegistry: { columns: { password: false } };
 		rollbackRegistry: { columns: { password: false } };
 		deployments: true;
+		domains: true;
 		environment: { with: { project: true } };
 	}
 >;
@@ -109,6 +114,7 @@ export const mechanizeDockerContainer = async (
 	const volumesMount = generateVolumeMounts(mounts);
 
 	const resolvedNetworks = await resolveServiceNetworks(application);
+	await assertSwarmReadinessRouting(application, resolvedNetworks);
 
 	const {
 		HealthCheck,
@@ -138,6 +144,7 @@ export const mechanizeDockerContainer = async (
 	const settings: CreateServiceOptions = {
 		authconfig: authConfig,
 		Name: appName,
+		Labels: createApplicationRoutingLabels(application),
 		TaskTemplate: {
 			ContainerSpec: {
 				HealthCheck,

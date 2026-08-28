@@ -3,6 +3,7 @@ import {
 	createApplication,
 	deleteAllMiddlewares,
 	findApplicationById,
+	findApplicationRuntimeServiceState,
 	findEnvironmentById,
 	findPreviewDeploymentsByApplicationId,
 	findProjectById,
@@ -12,6 +13,7 @@ import {
 	getGitCommitInfo,
 	getWebServerSettings,
 	IS_CLOUD,
+	isSwarmReadinessTraefikImage,
 	mechanizeDockerContainer,
 	readConfig,
 	readRemoteConfig,
@@ -21,13 +23,14 @@ import {
 	removePreviewDeployment,
 	removeService,
 	removeTraefikConfig,
-	sourceRevisionLabelPlaceholder,
 	scaleService,
 	scaleServiceRemote,
+	sourceRevisionLabelPlaceholder,
 	startService,
 	startServiceRemote,
 	stopService,
 	stopServiceRemote,
+	synchronizeApplicationRouting,
 	unzipDrop,
 	updateApplication,
 	updateApplicationStatus,
@@ -194,6 +197,15 @@ export const applicationRouter = createTRPCRouter({
 				hasGitProviderAccess,
 				unauthorizedProvider,
 			};
+		}),
+	runtimeServiceState: protectedProcedure
+		.input(apiFindOneApplication)
+		.query(async ({ input, ctx }) => {
+			await checkServiceAccess(ctx, input.applicationId, "read");
+			return await findApplicationRuntimeServiceState(
+				input.applicationId,
+				ctx.session.activeOrganizationId,
+			);
 		}),
 
 	reload: protectedProcedure
@@ -750,16 +762,64 @@ export const applicationRouter = createTRPCRouter({
 				}
 			}
 
+			const changesReadinessRouting = [
+				"readinessCheckSwarm",
+				"networkSwarm",
+				"networkIds",
+				"detachDokployNetwork",
+			].some((field) => field in input);
+			const previousApplication = changesReadinessRouting
+				? await findApplicationById(input.applicationId)
+				: undefined;
+			const nextReadiness =
+				"readinessCheckSwarm" in input
+					? input.readinessCheckSwarm
+					: previousApplication?.readinessCheckSwarm;
+			if (
+				nextReadiness &&
+				(process.env.NODE_ENV === "development" ||
+					!isSwarmReadinessTraefikImage())
+			) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message:
+						"Swarm readiness routing requires production and the supported immutable Traefik image",
+				});
+			}
 			const { applicationId, ...rest } = input;
-			const updateApp = await updateApplication(applicationId, {
-				...rest,
-			});
+			const updateApp = await updateApplication(applicationId, rest);
 
 			if (!updateApp) {
 				throw new TRPCError({
 					code: "BAD_REQUEST",
 					message: "Error updating application",
 				});
+			}
+			if (changesReadinessRouting) {
+				try {
+					await synchronizeApplicationRouting(
+						await findApplicationById(applicationId),
+					);
+				} catch (error) {
+					if (!previousApplication) {
+						throw error;
+					}
+					await updateApplication(applicationId, {
+						readinessCheckSwarm: previousApplication.readinessCheckSwarm,
+						networkSwarm: previousApplication.networkSwarm,
+						networkIds: previousApplication.networkIds,
+						detachDokployNetwork: previousApplication.detachDokployNetwork,
+					});
+					try {
+						await synchronizeApplicationRouting(previousApplication);
+					} catch (recoveryError) {
+						throw new AggregateError(
+							[error, recoveryError],
+							"Readiness routing update and recovery failed",
+						);
+					}
+					throw error;
+				}
 			}
 			await audit(ctx, {
 				action: "update",
