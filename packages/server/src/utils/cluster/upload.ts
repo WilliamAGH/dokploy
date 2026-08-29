@@ -24,6 +24,12 @@ export const uploadImageRemoteCommand = async (
 		application.sourceType === "docker"
 			? application.dockerImage || ""
 			: `${appName}:latest`;
+	if (
+		application.sourceType === "docker" &&
+		/@sha256:[a-f0-9]{64}$/.test(imageName)
+	) {
+		return "";
+	}
 
 	const commands: string[] = [];
 	if (registry) {

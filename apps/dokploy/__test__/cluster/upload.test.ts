@@ -1,5 +1,5 @@
 import type { Registry } from "@dokploy/server";
-import { getRegistryTag } from "@dokploy/server";
+import { getRegistryTag, uploadImageRemoteCommand } from "@dokploy/server";
 import { describe, expect, it } from "vitest";
 
 describe("getRegistryTag", () => {
@@ -240,4 +240,14 @@ describe("getRegistryTag", () => {
 			expect(result).toBe("docker.io/robot+test-user/nginx:latest");
 		});
 	});
+});
+
+it("uses immutable Docker source images without retagging them", async () => {
+	const command = await uploadImageRemoteCommand({
+		sourceType: "docker",
+		dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
+		registry: { registryId: "unused-for-immutable-source" },
+	} as never);
+
+	expect(command).toBe("");
 });
