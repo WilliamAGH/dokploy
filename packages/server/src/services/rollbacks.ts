@@ -204,9 +204,14 @@ export const rollback = async (rollbackId: string) => {
 	if (!result.fullContext) {
 		throw new Error("Rollback context not found");
 	}
+	const immutableDockerBaseline =
+		result.fullContext.sourceType === "docker" &&
+		/@sha256:[a-f0-9]{64}$/.test(result.fullContext.dockerImage || "")
+			? result.fullContext.dockerImage
+			: undefined;
 	await rollbackApplication(
 		application.appName,
-		result.image || "",
+		immutableDockerBaseline || result.image || "",
 		application.serverId,
 		result.fullContext,
 	);
