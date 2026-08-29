@@ -126,7 +126,14 @@ export const cleanQueuesByCompose = async (composeId: string) => {
 };
 
 export const cleanAllDeploymentQueue = async () => {
-	myQueue.clearWaiting();
+	const removedJobs = myQueue.removeWaitingJobs(() => true);
+	await Promise.all(
+		removedJobs.flatMap((job) =>
+			job.applicationType === "application" && job.deploymentId
+				? [updateDeploymentStatus(job.deploymentId, "cancelled")]
+				: [],
+		),
+	);
 	return true;
 };
 
