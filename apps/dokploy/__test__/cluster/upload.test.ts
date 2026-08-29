@@ -1,6 +1,27 @@
 import type { Registry } from "@dokploy/server";
 import { getRegistryTag, uploadImageRemoteCommand } from "@dokploy/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const { findDeploymentsMock, findRegistryMock, createRollbackMock } = vi.hoisted(
+	() => ({
+		findDeploymentsMock: vi.fn(),
+		findRegistryMock: vi.fn(),
+		createRollbackMock: vi.fn(),
+	}),
+);
+
+vi.mock("@dokploy/server/services/deployment", () => ({
+	findAllDeploymentsByApplicationId: findDeploymentsMock,
+}));
+vi.mock("@dokploy/server/services/registry", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@dokploy/server/services/registry")
+	>()),
+	findRegistryByIdWithCredentials: findRegistryMock,
+}));
+vi.mock("@dokploy/server/services/rollbacks", () => ({
+	createRollback: createRollbackMock,
+}));
 
 describe("getRegistryTag", () => {
 	// Helper to create a mock registry
@@ -243,6 +264,7 @@ describe("getRegistryTag", () => {
 });
 
 it("uses immutable Docker source images without retagging them", async () => {
+	findRegistryMock.mockReset();
 	const command = await uploadImageRemoteCommand({
 		sourceType: "docker",
 		dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
@@ -250,4 +272,32 @@ it("uses immutable Docker source images without retagging them", async () => {
 	} as never);
 
 	expect(command).toBe("");
+	expect(findRegistryMock).not.toHaveBeenCalled();
+});
+
+it("preserves rollback publication for immutable Docker sources", async () => {
+	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
+	createRollbackMock.mockResolvedValue({ image: "app:v1" });
+	findRegistryMock.mockResolvedValue({
+		registryId: "rollback-registry",
+		registryUrl: "registry.example.com",
+		registryType: "cloud",
+		imagePrefix: "team",
+		username: "user",
+		password: "password",
+	});
+	const digest = `registry.example.com/app@sha256:${"a".repeat(64)}`;
+	const command = await uploadImageRemoteCommand({
+		applicationId: "application-id",
+		appName: "app",
+		sourceType: "docker",
+		dockerImage: digest,
+		registry: { registryId: "unused-for-immutable-source" },
+		rollbackActive: true,
+		rollbackRegistry: { registryId: "rollback-registry" },
+	} as never);
+
+	expect(command).toContain("Enabled Rollback Registry");
+	expect(command).toContain("docker image inspect");
+	expect(command).toContain("a".repeat(64));
 });

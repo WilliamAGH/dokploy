@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 type MockCreateServiceOptions = {
 	TaskTemplate?: {
 		ContainerSpec?: {
+			Image?: string;
 			Labels?: Record<string, string>;
 			StopGracePeriod?: number;
 			Ulimits?: Array<{ Name: string; Soft: number; Hard: number }>;
@@ -14,7 +15,13 @@ type MockCreateServiceOptions = {
 	[key: string]: unknown;
 };
 
-const { inspectMock, getServiceMock, createServiceMock, getRemoteDockerMock } =
+const {
+	inspectMock,
+	getServiceMock,
+	createServiceMock,
+	getRemoteDockerMock,
+	findRegistryMock,
+} =
 	vi.hoisted(() => {
 		const inspect = vi.fn<() => Promise<never>>();
 		const getService = vi.fn(() => ({ inspect }));
@@ -25,16 +32,24 @@ const { inspectMock, getServiceMock, createServiceMock, getRemoteDockerMock } =
 			getService,
 			createService,
 		}));
+		const findRegistry = vi.fn();
 		return {
 			inspectMock: inspect,
 			getServiceMock: getService,
 			createServiceMock: createService,
 			getRemoteDockerMock: getRemoteDocker,
+			findRegistryMock: findRegistry,
 		};
 	});
 
 vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 	getRemoteDocker: getRemoteDockerMock,
+}));
+vi.mock("@dokploy/server/services/registry", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("@dokploy/server/services/registry")
+	>()),
+	findRegistryByIdWithCredentials: findRegistryMock,
 }));
 
 const createApplication = (
@@ -72,10 +87,39 @@ describe("mechanizeDockerContainer", () => {
 		getServiceMock.mockClear();
 		createServiceMock.mockClear();
 		getRemoteDockerMock.mockClear();
+		findRegistryMock.mockReset();
 		getRemoteDockerMock.mockResolvedValue({
 			getService: getServiceMock,
 			createService: createServiceMock,
 		});
+	});
+
+	it("keeps an exact Docker digest and sends selected registry auth", async () => {
+		const digest = `registry.example.com/app@sha256:${"a".repeat(64)}`;
+		findRegistryMock.mockResolvedValue({
+			username: "registry-user",
+			password: "registry-password",
+			registryUrl: "registry.example.com",
+		});
+
+		await mechanizeDockerContainer(
+			createApplication({
+				dockerImage: digest,
+				registry: { registryId: "registry-id" } as never,
+			}),
+		);
+
+		expect(createServiceMock).toHaveBeenCalledTimes(1);
+		const call = createServiceMock.mock.calls[0] as unknown as [
+			Record<string, string>,
+			MockCreateServiceOptions,
+		];
+		expect(call[0]).toEqual({
+			username: "registry-user",
+			password: "registry-password",
+			serveraddress: "registry.example.com",
+		});
+		expect(call[1].TaskTemplate?.ContainerSpec?.Image).toBe(digest);
 	});
 
 	it("passes stopGracePeriodSwarm as a number and keeps zero values", async () => {

@@ -234,14 +234,16 @@ export const getAuthConfig = async (application: ApplicationNested) => {
 		if (username && password) {
 			return { password, username, serveraddress: registryUrl || "" };
 		}
-	} else if (registry) {
+	}
+	if (registry) {
 		const r = await findRegistryByIdWithCredentials(registry.registryId);
 		return {
 			password: r.password,
 			username: r.username,
 			serveraddress: r.registryUrl,
 		};
-	} else if (buildRegistry) {
+	}
+	if (buildRegistry) {
 		const r = await findRegistryByIdWithCredentials(buildRegistry.registryId);
 		return {
 			password: r.password,

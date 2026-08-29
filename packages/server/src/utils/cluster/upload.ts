@@ -24,15 +24,12 @@ export const uploadImageRemoteCommand = async (
 		application.sourceType === "docker"
 			? application.dockerImage || ""
 			: `${appName}:latest`;
-	if (
+	const immutableDockerSource =
 		application.sourceType === "docker" &&
-		/@sha256:[a-f0-9]{64}$/.test(imageName)
-	) {
-		return "";
-	}
+		/@sha256:[a-f0-9]{64}$/.test(imageName);
 
 	const commands: string[] = [];
-	if (registry) {
+	if (registry && !immutableDockerSource) {
 		const r = await findRegistryByIdWithCredentials(registry.registryId);
 		const registryTag = getRegistryTag(r, imageName);
 		if (registryTag) {
@@ -40,7 +37,7 @@ export const uploadImageRemoteCommand = async (
 			commands.push(getRegistryCommands(r, imageName, registryTag));
 		}
 	}
-	if (buildRegistry) {
+	if (buildRegistry && !immutableDockerSource) {
 		const r = await findRegistryByIdWithCredentials(buildRegistry.registryId);
 		const buildRegistryTag = getRegistryTag(r, imageName);
 		if (buildRegistryTag) {
@@ -130,6 +127,9 @@ const getRegistryCommands = (
 		registry.username,
 		registry.password,
 	);
+	const tagSource = /@sha256:[a-f0-9]{64}$/.test(imageName)
+		? `$(docker image inspect --format '{{.Id}}' ${quote([imageName])})`
+		: quote([imageName]);
 	return `
 echo ${quote([`📦 [Enabled Registry] Uploading image to '${registry.registryType}' | '${registryTag}'`])} ;
 ${loginCmd} || {
@@ -137,7 +137,7 @@ ${loginCmd} || {
 	exit 1;
 }
 echo "✅ Registry Login Success" ;
-docker tag ${quote([imageName])} ${quote([registryTag])} || {
+docker tag ${tagSource} ${quote([registryTag])} || {
 	echo "❌ Error tagging image" ;
 	exit 1;
 }
