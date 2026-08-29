@@ -59,7 +59,31 @@ export const manageDomain = async (app: ApplicationNested, domain: Domain) => {
 		delete config.http.routers[routerNameSecure];
 	}
 
-	config.http.services[serviceName] = createServiceConfig(appName, domain);
+	config.http.services[serviceName] = createServiceConfig(app, domain);
+	const transportName = `${appName}-swarm-vip`;
+	if (app.swarmVipConnectionReuse) {
+		for (const [name, service] of Object.entries(config.http.services)) {
+			if (
+				name.startsWith(`${appName}-service-`) &&
+				"loadBalancer" in service &&
+				service.loadBalancer?.serversTransport === transportName
+			) {
+				delete service.loadBalancer?.serversTransport;
+			}
+		}
+		delete config.http.serversTransports?.[transportName];
+		if (
+			config.http.serversTransports &&
+			Object.keys(config.http.serversTransports).length === 0
+		) {
+			delete config.http.serversTransports;
+		}
+	} else {
+		config.http.serversTransports ??= {};
+		config.http.serversTransports[transportName] = {
+			maxIdleConnsPerHost: -1,
+		};
+	}
 
 	await createPathMiddlewares(app, domain);
 	// SSO forward-auth: writes the per-app forwardAuth + errors middlewares (the

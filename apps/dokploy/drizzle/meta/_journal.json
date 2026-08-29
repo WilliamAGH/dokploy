@@ -1303,6 +1303,13 @@
       "when": 1786526512677,
       "tag": "0185_needy_kingpin",
       "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1787966509176,
+      "tag": "0186_powerful_millenium_guard",
+      "breakpoints": true
     }
   ]
 }

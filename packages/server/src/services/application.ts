@@ -28,6 +28,7 @@ import { cloneGiteaRepository } from "@dokploy/server/utils/providers/gitea";
 import { cloneGithubRepository } from "@dokploy/server/utils/providers/github";
 import { cloneGitlabRepository } from "@dokploy/server/utils/providers/gitlab";
 import { createTraefikConfig } from "@dokploy/server/utils/traefik/application";
+import { manageDomain } from "@dokploy/server/utils/traefik/domain";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import type { z } from "zod";
@@ -157,6 +158,13 @@ export const updateApplication = async (
 		})
 		.where(eq(applications.applicationId, applicationId))
 		.returning();
+
+	if ("swarmVipConnectionReuse" in applicationData) {
+		const applicationWithDomains = await findApplicationById(applicationId);
+		for (const domain of applicationWithDomains.domains) {
+			await manageDomain(applicationWithDomains, domain);
+		}
+	}
 
 	return application[0];
 };

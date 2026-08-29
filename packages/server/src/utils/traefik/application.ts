@@ -3,6 +3,7 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { paths } from "@dokploy/server/constants";
 import type { Domain } from "@dokploy/server/services/domain";
+import type { ApplicationNested } from "@dokploy/server/utils/builders";
 import { quote } from "shell-quote";
 import { parse, stringify } from "yaml";
 import { encodeBase64 } from "../docker/utils";
@@ -293,13 +294,16 @@ export const writeTraefikConfigRemote = async (
 };
 
 export const createServiceConfig = (
-	appName: string,
+	application: Pick<ApplicationNested, "appName" | "swarmVipConnectionReuse">,
 	domain: Domain,
 ): {
 	loadBalancer: HttpLoadBalancerService;
 } => ({
 	loadBalancer: {
-		servers: [{ url: `http://${appName}:${domain.port || 80}` }],
+		servers: [{ url: `http://${application.appName}:${domain.port || 80}` }],
 		passHostHeader: true,
+		...(!application.swarmVipConnectionReuse && {
+			serversTransport: `${application.appName}-swarm-vip`,
+		}),
 	},
 });
