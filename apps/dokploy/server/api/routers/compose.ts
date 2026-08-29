@@ -663,14 +663,7 @@ export const composeRouter = createTRPCRouter({
 				});
 				return true;
 			}
-			await myQueue.add(
-				"deployments",
-				{ ...jobData },
-				{
-					removeOnComplete: true,
-					removeOnFail: true,
-				},
-			);
+			await myQueue.add({ ...jobData });
 			await audit(ctx, {
 				action: "deploy",
 				resourceType: "compose",
@@ -711,14 +704,7 @@ export const composeRouter = createTRPCRouter({
 				});
 				return true;
 			}
-			await myQueue.add(
-				"deployments",
-				{ ...jobData },
-				{
-					removeOnComplete: true,
-					removeOnFail: true,
-				},
-			);
+			await myQueue.add({ ...jobData });
 			await audit(ctx, {
 				action: "deploy",
 				resourceType: "compose",

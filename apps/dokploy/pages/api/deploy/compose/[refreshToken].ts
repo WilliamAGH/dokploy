@@ -198,14 +198,7 @@ export default async function handler(
 					console.error("Background deployment failed:", error);
 				});
 			} else {
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
+				await myQueue.add({ ...jobData });
 			}
 		} catch (error) {
 			logWebhookError("Error deploying Compose:", error);

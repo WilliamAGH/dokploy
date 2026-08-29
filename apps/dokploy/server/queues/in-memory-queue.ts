@@ -123,8 +123,16 @@ export class InMemoryQueue {
 		return Promise.resolve();
 	}
 
-	async add(data: DeploymentJob): Promise<{ id: string }> {
-		const id = `job-${++this.seq}`;
+	async add(data: DeploymentJob, jobId?: string): Promise<{ id: string }> {
+		if (jobId) {
+			const existing = [...this.partitions.values()].some(
+				(partition) =>
+					partition.waiting.some((job) => job.id === jobId) ||
+					partition.active.some((job) => job.id === jobId),
+			);
+			if (existing) return { id: jobId };
+		}
+		const id = jobId ?? `job-${++this.seq}`;
 		const partitionKey = getPartition(data);
 		const job: InternalJob = {
 			id,
@@ -181,11 +189,15 @@ export class InMemoryQueue {
 
 	/** Remove waiting jobs matching a predicate. Active jobs are not affected. */
 	removeWaiting(predicate: (data: DeploymentJob) => boolean): number {
-		let removed = 0;
+		return this.removeWaitingJobs(predicate).length;
+	}
+
+	removeWaitingJobs(predicate: (data: DeploymentJob) => boolean): DeploymentJob[] {
+		const removed: DeploymentJob[] = [];
 		for (const partition of this.partitions.values()) {
 			partition.waiting = partition.waiting.filter((job) => {
 				const match = predicate(job.data);
-				if (match) removed++;
+				if (match) removed.push(job.data);
 				return !match;
 			});
 		}

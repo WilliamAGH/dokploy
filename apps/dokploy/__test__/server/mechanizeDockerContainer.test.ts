@@ -215,12 +215,13 @@ describe("mechanizeDockerContainer", () => {
 		const firstRevision = "0123456789abcdef0123456789abcdef01234567";
 		const secondRevision = "89abcdef0123456789abcdef0123456789abcdef";
 
-		await mechanizeDockerContainer(application, firstRevision);
+		await mechanizeDockerContainer(application, firstRevision, "deployment-id");
 		await mechanizeDockerContainer(application, secondRevision);
 
 		const firstSettings = createServiceMock.mock.calls[0]?.[0];
 		const secondSettings = createServiceMock.mock.calls[1]?.[0];
 		expect(firstSettings?.TaskTemplate?.ContainerSpec?.Labels).toEqual({
+			"dokploy.deployment.id": "deployment-id",
 			"org.opencontainers.image.revision": firstRevision,
 			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
 			"test.static": "unchanged",

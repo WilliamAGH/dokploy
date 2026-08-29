@@ -325,6 +325,7 @@ describe("deployApplication - Command Generation Tests", () => {
 				buildPath: "/astro",
 			}),
 			sourceRevision,
+			expect.any(String),
 		);
 
 		expect(execProcess.execAsync).toHaveBeenCalledWith(
@@ -355,6 +356,7 @@ describe("deployApplication - Command Generation Tests", () => {
 				buildType: "railpack",
 			}),
 			sourceRevision,
+			expect.any(String),
 		);
 
 		expect(execProcess.execAsync).toHaveBeenCalledWith(
@@ -423,6 +425,7 @@ describe("deployApplication - Command Generation Tests", () => {
 		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
 			expect.anything(),
 			sourceRevision,
+			expect.any(String),
 		);
 	});
 
@@ -488,10 +491,12 @@ describe("deployApplication - Command Generation Tests", () => {
 		expect(builders.getBuildCommand).toHaveBeenCalledWith(
 			expect.anything(),
 			sourceRevision,
+			expect.any(String),
 		);
 		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
 			expect.anything(),
 			sourceRevision,
+			expect.any(String),
 		);
 	});
 
@@ -528,10 +533,12 @@ describe("deployApplication - Command Generation Tests", () => {
 		expect(builders.getBuildCommand).toHaveBeenCalledWith(
 			expect.objectContaining({ appName: "preview-test-app" }),
 			sourceRevision,
+			expect.any(String),
 		);
 		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
 			expect.objectContaining({ appName: "preview-test-app" }),
 			sourceRevision,
+			expect.any(String),
 		);
 	});
 
@@ -568,10 +575,12 @@ describe("deployApplication - Command Generation Tests", () => {
 		expect(builders.getBuildCommand).toHaveBeenCalledWith(
 			expect.objectContaining({ appName: "preview-test-app" }),
 			sourceRevision,
+			expect.any(String),
 		);
 		expect(builders.mechanizeDockerContainer).toHaveBeenCalledWith(
 			expect.objectContaining({ appName: "preview-test-app" }),
 			sourceRevision,
+			expect.any(String),
 		);
 	});
 });

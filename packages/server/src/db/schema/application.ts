@@ -421,6 +421,14 @@ export const apiDeployApplication = createSchema
 		applicationId: z.string().min(1),
 		title: z.string().optional(),
 		description: z.string().optional(),
+		idempotencyKey: z
+			.string()
+			.min(1)
+			.max(128)
+			.regex(/^[A-Za-z0-9_-]+$/)
+			.optional(),
+		expectedDockerImage: z.string().optional(),
+		expectedLabelsSwarm: LabelsSwarmSchema.optional(),
 	});
 
 export const apiRedeployApplication = createSchema
@@ -558,5 +566,7 @@ export const apiUpdateApplication = createSchema
 	.partial()
 	.extend({
 		applicationId: z.string().min(1),
+		expectedDockerImage: z.string().optional(),
+		expectedLabelsSwarm: LabelsSwarmSchema.optional(),
 	})
 	.omit({ serverId: true });

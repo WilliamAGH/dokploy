@@ -1,6 +1,9 @@
 type DeployJob =
 	| {
 			applicationId: string;
+			deploymentId?: string;
+			expectedDockerImage?: string;
+			expectedLabelsSwarm?: Record<string, string>;
 			titleLog: string;
 			descriptionLog: string;
 			sourceRevision?: string;

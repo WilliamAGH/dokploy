@@ -1,5 +1,6 @@
 import { existsSync, promises as fsPromises } from "node:fs";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { paths } from "@dokploy/server/constants";
 import { db } from "@dokploy/server/db";
 import {
@@ -124,14 +125,16 @@ export const createDeployment = async (
 	deployment: Omit<
 		z.infer<typeof apiCreateDeployment>,
 		"deploymentId" | "createdAt" | "status" | "logPath"
-	>,
+	> & { deploymentId?: string },
 ) => {
 	const application = await findApplicationById(deployment.applicationId);
-	await removeLastTenDeployments(
-		deployment.applicationId,
-		"application",
-		application.serverId,
-	);
+	if (!deployment.deploymentId) {
+		await removeLastTenDeployments(
+			deployment.applicationId,
+			"application",
+			application.serverId,
+		);
+	}
 	try {
 		const serverId = application.buildServerId || application.serverId;
 
@@ -157,9 +160,7 @@ export const createDeployment = async (
 			await fsPromises.writeFile(logFilePath, "Initializing deployment\n");
 		}
 
-		const deploymentCreate = await db
-			.insert(deployments)
-			.values({
+		const deploymentValues = {
 				applicationId: deployment.applicationId,
 				title: deployment.title || "Deployment",
 				status: "running",
@@ -169,8 +170,14 @@ export const createDeployment = async (
 				...(application.buildServerId && {
 					buildServerId: application.buildServerId,
 				}),
-			})
-			.returning();
+			} as const;
+		const deploymentCreate = deployment.deploymentId
+			? await db
+					.update(deployments)
+					.set(deploymentValues)
+					.where(eq(deployments.deploymentId, deployment.deploymentId))
+					.returning()
+			: await db.insert(deployments).values(deploymentValues).returning();
 		if (deploymentCreate.length === 0 || !deploymentCreate[0]) {
 			throw new TRPCError({
 				code: "BAD_REQUEST",
@@ -179,9 +186,7 @@ export const createDeployment = async (
 		}
 		return deploymentCreate[0];
 	} catch (error) {
-		await db
-			.insert(deployments)
-			.values({
+		const failedDeployment = {
 				applicationId: deployment.applicationId,
 				title: deployment.title || "Deployment",
 				status: "error",
@@ -190,8 +195,15 @@ export const createDeployment = async (
 				errorMessage: `An error have occurred: ${error instanceof Error ? error.message : error}`,
 				startedAt: new Date().toISOString(),
 				finishedAt: new Date().toISOString(),
-			})
-			.returning();
+			} as const;
+		if (deployment.deploymentId) {
+			await db
+				.update(deployments)
+				.set(failedDeployment)
+				.where(eq(deployments.deploymentId, deployment.deploymentId));
+		} else {
+			await db.insert(deployments).values(failedDeployment);
+		}
 		await updateApplicationStatus(application.applicationId, "error");
 		console.log(error);
 		throw new TRPCError({
@@ -199,6 +211,73 @@ export const createDeployment = async (
 			message: "Error creating the deployment",
 		});
 	}
+};
+
+export const createDeploymentSubmission = async ({
+	applicationId,
+	deploymentId,
+	title,
+	description,
+	expectedDockerImage,
+	expectedLabelsSwarm,
+}: {
+	applicationId: string;
+	deploymentId: string;
+	title: string;
+	description: string;
+	expectedDockerImage: string;
+	expectedLabelsSwarm: Record<string, string>;
+}) => {
+	const application = await findApplicationById(applicationId);
+	const result = await db.transaction(async (tx) => {
+		const [current] = await tx
+			.select({
+				dockerImage: applications.dockerImage,
+				labelsSwarm: applications.labelsSwarm,
+			})
+			.from(applications)
+			.where(eq(applications.applicationId, applicationId))
+			.for("update");
+		if (
+			!current ||
+			current.dockerImage !== expectedDockerImage ||
+			!isDeepStrictEqual(current.labelsSwarm, expectedLabelsSwarm)
+		) {
+			throw new TRPCError({
+				code: "CONFLICT",
+				message: "Application deployment metadata changed before submission",
+			});
+		}
+		const existing = await tx.query.deployments.findFirst({
+			where: eq(deployments.deploymentId, deploymentId),
+		});
+		if (existing) return { deployment: existing, created: false };
+		const [deployment] = await tx
+			.insert(deployments)
+			.values({
+				deploymentId,
+				applicationId,
+				title,
+				description,
+				status: "running",
+				logPath: "",
+				startedAt: new Date().toISOString(),
+			})
+			.onConflictDoNothing()
+			.returning();
+		return {
+			deployment: deployment ?? (await findDeploymentById(deploymentId)),
+			created: Boolean(deployment),
+		};
+	});
+	if (result.created) {
+		await removeLastTenDeployments(
+			applicationId,
+			"application",
+			application.serverId,
+		);
+	}
+	return result;
 };
 
 export const createDeploymentPreview = async (
@@ -702,8 +781,11 @@ const removeLastTenDeployments = async (
 	serverId?: string | null,
 ) => {
 	const deploymentList = await getDeploymentsByType(id, type);
-	if (deploymentList.length > 10) {
-		const deploymentsToDelete = deploymentList.slice(10);
+	const completedDeployments = deploymentList.filter(
+		(deployment) => deployment.status !== "running",
+	);
+	if (completedDeployments.length > 10) {
+		const deploymentsToDelete = completedDeployments.slice(10);
 		if (serverId) {
 			let command = "";
 			for (const oldDeployment of deploymentsToDelete) {

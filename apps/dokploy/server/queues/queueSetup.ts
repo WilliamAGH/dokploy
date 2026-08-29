@@ -1,4 +1,4 @@
-import { IS_CLOUD } from "@dokploy/server";
+import { IS_CLOUD, updateDeploymentStatus } from "@dokploy/server";
 import {
 	execAsync,
 	execAsyncRemote,
@@ -17,16 +17,13 @@ import type { DeploymentJob } from "./queue-types";
  */
 
 interface DeploymentQueue {
-	add: (
-		name: string,
-		data: DeploymentJob,
-		opts?: Record<string, unknown>,
-	) => Promise<{ id: string }>;
+	add: (data: DeploymentJob, jobId?: string) => Promise<{ id: string }>;
 	getJobs: (states?: Array<"waiting" | "active">) => Promise<InMemoryJob[]>;
 	close: () => Promise<void>;
 	on: (...args: unknown[]) => void;
 	run: () => Promise<void>;
 	removeWaiting: (predicate: (data: DeploymentJob) => boolean) => number;
+	removeWaitingJobs: (predicate: (data: DeploymentJob) => boolean) => DeploymentJob[];
 	clearWaiting: () => number;
 }
 
@@ -37,6 +34,7 @@ const createNoopQueue = (): DeploymentQueue => ({
 	on: () => {},
 	run: () => Promise.resolve(),
 	removeWaiting: () => 0,
+	removeWaitingJobs: () => [],
 	clearWaiting: () => 0,
 });
 
@@ -47,12 +45,13 @@ const createInMemoryQueue = (): DeploymentQueue => {
 	queue.process(processDeploymentJob);
 
 	return {
-		add: (_name, data) => queue.add(data),
+		add: (data, jobId) => queue.add(data, jobId),
 		getJobs: (states) => queue.getJobs(states),
 		close: () => queue.close(),
 		on: () => {},
 		run: () => queue.run(),
 		removeWaiting: (predicate) => queue.removeWaiting(predicate),
+		removeWaitingJobs: (predicate) => queue.removeWaitingJobs(predicate),
 		clearWaiting: () => queue.clearWaiting(),
 	};
 };
@@ -96,15 +95,26 @@ if (!IS_CLOUD) {
 }
 
 export const cleanQueuesByApplication = async (applicationId: string) => {
-	const removed = myQueue.removeWaiting(
+	const removedJobs = myQueue.removeWaitingJobs(
 		(data) => (data as any)?.applicationId === applicationId,
 	);
-	if (removed > 0) {
+	const deploymentIds = removedJobs.flatMap((job) =>
+		job.applicationType === "application" && job.deploymentId
+			? [job.deploymentId]
+			: [],
+	);
+	await Promise.all(
+		deploymentIds.map((deploymentId) =>
+			updateDeploymentStatus(deploymentId, "cancelled"),
+		),
+	);
+	if (removedJobs.length > 0) {
 		console.log(
-			`Removed ${removed} waiting job(s) for application ${applicationId}`,
+			`Removed ${removedJobs.length} waiting job(s) for application ${applicationId}`,
 		);
 	}
 };
+
 
 export const cleanQueuesByCompose = async (composeId: string) => {
 	const removed = myQueue.removeWaiting(

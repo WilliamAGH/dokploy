@@ -6,6 +6,7 @@ import {
 	rebuildCompose,
 	rebuildPreviewApplication,
 	updateApplicationStatus,
+	updateDeployment,
 	updateCompose,
 	updatePreviewDeployment,
 } from "@dokploy/server";
@@ -29,6 +30,9 @@ export const processDeploymentJob = async (job: InMemoryJob) => {
 			} else if (job.data.type === "deploy") {
 				await deployApplication({
 					applicationId: job.data.applicationId,
+					deploymentId: job.data.deploymentId,
+					expectedDockerImage: job.data.expectedDockerImage,
+					expectedLabelsSwarm: job.data.expectedLabelsSwarm,
 					titleLog: job.data.titleLog,
 					descriptionLog: job.data.descriptionLog,
 					sourceRevision: job.data.sourceRevision,
@@ -73,6 +77,14 @@ export const processDeploymentJob = async (job: InMemoryJob) => {
 			}
 		}
 	} catch (error) {
+		if (job.data.applicationType === "application" && job.data.deploymentId) {
+			await updateDeployment(job.data.deploymentId, {
+				status: "error",
+				finishedAt: new Date().toISOString(),
+				errorMessage: error instanceof Error ? error.message : String(error),
+			});
+			await updateApplicationStatus(job.data.applicationId, "error");
+		}
 		console.log("Error", error);
 	}
 };

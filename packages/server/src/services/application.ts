@@ -31,6 +31,7 @@ import { createTraefikConfig } from "@dokploy/server/utils/traefik/application";
 import { manageDomain } from "@dokploy/server/utils/traefik/domain";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
+import { isDeepStrictEqual } from "node:util";
 import type { z } from "zod";
 import { encodeBase64 } from "../utils/docker/utils";
 import { getDokployUrl } from "./admin";
@@ -169,6 +170,35 @@ export const updateApplication = async (
 	return application[0];
 };
 
+export const updateApplicationIfMetadataMatches = async (
+	applicationId: string,
+	expected: Pick<Application, "dockerImage" | "labelsSwarm">,
+	replacement: Pick<Application, "dockerImage" | "labelsSwarm">,
+) =>
+	db.transaction(async (tx) => {
+		const [application] = await tx
+			.select({
+				dockerImage: applications.dockerImage,
+				labelsSwarm: applications.labelsSwarm,
+			})
+			.from(applications)
+			.where(eq(applications.applicationId, applicationId))
+			.for("update");
+		if (
+			!application ||
+			application.dockerImage !== expected.dockerImage ||
+			!isDeepStrictEqual(application.labelsSwarm, expected.labelsSwarm)
+		) {
+			return null;
+		}
+		const [updated] = await tx
+			.update(applications)
+			.set(replacement)
+			.where(eq(applications.applicationId, applicationId))
+			.returning();
+		return updated;
+	});
+
 export const updateApplicationStatus = async (
 	applicationId: string,
 	applicationStatus: Application["applicationStatus"],
@@ -186,16 +216,37 @@ export const updateApplicationStatus = async (
 
 export const deployApplication = async ({
 	applicationId,
+	deploymentId,
+	expectedDockerImage,
+	expectedLabelsSwarm,
 	titleLog = "Manual deployment",
 	descriptionLog = "",
 	sourceRevision,
 }: {
 	applicationId: string;
+	deploymentId?: string;
+	expectedDockerImage?: string;
+	expectedLabelsSwarm?: Record<string, string>;
 	titleLog: string;
 	descriptionLog: string;
 	sourceRevision?: string;
 }) => {
 	const application = await findApplicationById(applicationId);
+	if (
+		(expectedDockerImage !== undefined &&
+			application.dockerImage !== expectedDockerImage) ||
+		(expectedLabelsSwarm !== undefined &&
+			!isDeepStrictEqual(application.labelsSwarm, expectedLabelsSwarm))
+	) {
+		if (deploymentId) {
+			await updateDeployment(deploymentId, {
+				status: "error",
+				finishedAt: new Date().toISOString(),
+				errorMessage: "Application deployment metadata changed after submission",
+			});
+		}
+		throw new Error("Application deployment metadata changed after submission");
+	}
 	const serverId = application.buildServerId || application.serverId;
 	const applicationEntity = {
 		...application,
@@ -205,6 +256,7 @@ export const deployApplication = async ({
 	const buildLink = `${await getDokployUrl()}/dashboard/project/${application.environment.projectId}/environment/${application.environmentId}/services/application/${application.applicationId}?tab=deployments`;
 	const deployment = await createDeployment({
 		applicationId: applicationId,
+		deploymentId,
 		title: titleLog,
 		description: descriptionLog,
 	});
@@ -265,7 +317,11 @@ export const deployApplication = async ({
 			});
 		}
 
-		command += await getBuildCommand(application, commitInfo?.hash);
+		command += await getBuildCommand(
+			application,
+			commitInfo?.hash,
+			deployment.deploymentId,
+		);
 
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (serverId) {
@@ -274,7 +330,11 @@ export const deployApplication = async ({
 			await execAsync(commandWithLog);
 		}
 
-		await mechanizeDockerContainer(application, commitInfo?.hash);
+		await mechanizeDockerContainer(
+			application,
+			commitInfo?.hash,
+			deployment.deploymentId,
+		);
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 		await updateApplicationStatus(applicationId, "done");
 
@@ -361,14 +421,22 @@ export const rebuildApplication = async ({
 			throw new Error("Unable to determine a valid checkout source revision");
 		}
 		let command = "set -e;";
-		command += await getBuildCommand(application, commitInfo?.hash);
+		command += await getBuildCommand(
+			application,
+			commitInfo?.hash,
+			deployment.deploymentId,
+		);
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (serverId) {
 			await execAsyncRemote(serverId, commandWithLog);
 		} else {
 			await execAsync(commandWithLog);
 		}
-		await mechanizeDockerContainer(application, commitInfo?.hash);
+		await mechanizeDockerContainer(
+			application,
+			commitInfo?.hash,
+			deployment.deploymentId,
+		);
 		await updateDeploymentStatus(deployment.deploymentId, "done");
 		await updateApplicationStatus(applicationId, "done");
 
@@ -501,14 +569,22 @@ export const deployPreviewApplication = async ({
 				throw new Error("Unable to determine a valid checkout source revision");
 			}
 			command = "set -e;";
-			command += await getBuildCommand(application, commitInfo.hash);
+			command += await getBuildCommand(
+				application,
+				commitInfo.hash,
+				deployment.deploymentId,
+			);
 			const buildCommandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 			if (application.serverId) {
 				await execAsyncRemote(application.serverId, buildCommandWithLog);
 			} else {
 				await execAsync(buildCommandWithLog);
 			}
-			await mechanizeDockerContainer(application, commitInfo.hash);
+			await mechanizeDockerContainer(
+				application,
+				commitInfo.hash,
+				deployment.deploymentId,
+			);
 		}
 		const successComment = getIssueComment(
 			application.name,
@@ -623,14 +699,22 @@ export const rebuildPreviewApplication = async ({
 			throw new Error("Unable to determine a valid checkout source revision");
 		}
 		// Only rebuild, don't clone repository
-		command += await getBuildCommand(application, commitInfo.hash);
+		command += await getBuildCommand(
+			application,
+			commitInfo.hash,
+			deployment.deploymentId,
+		);
 		const commandWithLog = `(${command}) >> ${deployment.logPath} 2>&1`;
 		if (serverId) {
 			await execAsyncRemote(serverId, commandWithLog);
 		} else {
 			await execAsync(commandWithLog);
 		}
-		await mechanizeDockerContainer(application, commitInfo.hash);
+		await mechanizeDockerContainer(
+			application,
+			commitInfo.hash,
+			deployment.deploymentId,
+		);
 
 		const successComment = getIssueComment(
 			application.name,

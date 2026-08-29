@@ -1,4 +1,3 @@
-import { findAllDeploymentsByApplicationId } from "@dokploy/server/services/deployment";
 import {
 	findRegistryByIdWithCredentials,
 	type Registry,
@@ -11,6 +10,7 @@ import type { ApplicationNested } from "../builders";
 
 export const uploadImageRemoteCommand = async (
 	application: ApplicationNested,
+	deploymentId?: string,
 ) => {
 	const registry = application.registry;
 	const buildRegistry = application.buildRegistry;
@@ -54,13 +54,7 @@ export const uploadImageRemoteCommand = async (
 	}
 
 	if (rollbackRegistry && application.rollbackActive) {
-		const deployment = await findAllDeploymentsByApplicationId(
-			application.applicationId,
-		);
-		if (!deployment || !deployment[0]) {
-			throw new Error("Deployment not found");
-		}
-		const deploymentId = deployment[0].deploymentId;
+		if (!deploymentId) throw new Error("Deployment not found");
 		let rollbackSource:
 			| { image: string; labels: Record<string, string> }
 			| undefined;
@@ -86,7 +80,7 @@ export const uploadImageRemoteCommand = async (
 		}
 		const rollback = await createRollback({
 			appName: appName,
-			deploymentId: deploymentId,
+			deploymentId,
 			...(rollbackSource && { rollbackSource }),
 		});
 

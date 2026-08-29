@@ -1,5 +1,6 @@
 import {
 	clearOldDeployments,
+	createDeploymentSubmission,
 	createApplication,
 	deleteAllMiddlewares,
 	findApplicationById,
@@ -30,6 +31,7 @@ import {
 	stopServiceRemote,
 	unzipDrop,
 	updateApplication,
+	updateApplicationIfMetadataMatches,
 	updateApplicationStatus,
 	updateDeploymentStatus,
 	writeConfig,
@@ -448,14 +450,7 @@ export const applicationRouter = createTRPCRouter({
 				});
 				return true;
 			}
-			await myQueue.add(
-				"deployments",
-				{ ...jobData },
-				{
-					removeOnComplete: true,
-					removeOnFail: true,
-				},
-			);
+			await myQueue.add({ ...jobData });
 			await audit(ctx, {
 				action: "rebuild",
 				resourceType: "application",
@@ -750,10 +745,44 @@ export const applicationRouter = createTRPCRouter({
 				}
 			}
 
-			const { applicationId, ...rest } = input;
-			const updateApp = await updateApplication(applicationId, {
-				...rest,
-			});
+			const {
+				applicationId,
+				expectedDockerImage,
+				expectedLabelsSwarm,
+				...rest
+			} = input;
+			const replacementDockerImage = rest.dockerImage;
+			const replacementLabelsSwarm = rest.labelsSwarm;
+			if ((expectedDockerImage === undefined) !== (expectedLabelsSwarm === undefined)) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Both expected deployment metadata fields are required",
+				});
+			}
+			if (
+				expectedDockerImage !== undefined &&
+				(replacementDockerImage === undefined ||
+					replacementLabelsSwarm === undefined)
+			) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Replacement deployment metadata fields are required",
+				});
+			}
+			const updateApp =
+				expectedDockerImage && expectedLabelsSwarm
+					? await updateApplicationIfMetadataMatches(
+							applicationId,
+							{
+								dockerImage: expectedDockerImage,
+								labelsSwarm: expectedLabelsSwarm,
+							},
+							{
+								dockerImage: replacementDockerImage!,
+								labelsSwarm: replacementLabelsSwarm!,
+							},
+						)
+					: await updateApplication(applicationId, { ...rest });
 
 			if (!updateApp) {
 				throw new TRPCError({
@@ -794,8 +823,44 @@ export const applicationRouter = createTRPCRouter({
 				deployment: ["create"],
 			});
 			const application = await findApplicationById(input.applicationId);
+			if (
+				Boolean(input.idempotencyKey) !==
+				Boolean(input.expectedDockerImage && input.expectedLabelsSwarm)
+			) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Idempotent deploy requires exact expected metadata",
+				});
+			}
+			if (input.idempotencyKey && IS_CLOUD) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Idempotent application deploy is unavailable in cloud mode",
+				});
+			}
+			const submission = input.idempotencyKey
+				? await createDeploymentSubmission({
+						applicationId: input.applicationId,
+						deploymentId: `application-${input.applicationId}-${input.idempotencyKey}`,
+						title: input.title || "Manual deployment",
+						description: input.description || "",
+						expectedDockerImage: input.expectedDockerImage!,
+						expectedLabelsSwarm: input.expectedLabelsSwarm!,
+					})
+				: null;
+			if (submission && !submission.created) {
+				if (
+					submission.deployment.status !== "running" ||
+					submission.deployment.logPath
+				) {
+					return { deploymentId: submission.deployment.deploymentId };
+				}
+			}
 			const jobData: DeploymentJob = {
 				applicationId: input.applicationId,
+				deploymentId: submission?.deployment.deploymentId,
+				expectedDockerImage: input.expectedDockerImage,
+				expectedLabelsSwarm: input.expectedLabelsSwarm,
 				titleLog: input.title || "Manual deployment",
 				descriptionLog: input.description || "",
 				type: "deploy",
@@ -815,22 +880,17 @@ export const applicationRouter = createTRPCRouter({
 				});
 				return true;
 			}
-			await myQueue.add(
-				"deployments",
-				{ ...jobData },
-				{
-					removeOnComplete: true,
-					removeOnFail: true,
-				},
-			);
+			await myQueue.add({ ...jobData }, submission?.deployment.deploymentId);
 			await audit(ctx, {
 				action: "deploy",
 				resourceType: "application",
 				resourceId: application.applicationId,
 				resourceName: application.appName,
 			});
+			return submission
+				? { deploymentId: submission.deployment.deploymentId }
+				: undefined;
 		}),
-
 	cleanQueues: protectedProcedure
 		.input(apiFindOneApplication)
 		.mutation(async ({ input, ctx }) => {
@@ -929,14 +989,7 @@ export const applicationRouter = createTRPCRouter({
 				return true;
 			}
 
-			await myQueue.add(
-				"deployments",
-				{ ...jobData },
-				{
-					removeOnComplete: true,
-					removeOnFail: true,
-				},
-			);
+			await myQueue.add({ ...jobData });
 			await audit(ctx, {
 				action: "deploy",
 				resourceType: "application",

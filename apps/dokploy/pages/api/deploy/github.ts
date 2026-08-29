@@ -146,14 +146,7 @@ export default async function handler(
 					});
 					continue;
 				}
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
+				await myQueue.add({ ...jobData });
 			}
 
 			// Find compose apps configured to deploy on tag
@@ -186,14 +179,7 @@ export default async function handler(
 					continue;
 				}
 
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
+				await myQueue.add({ ...jobData });
 			}
 
 			const totalApps = apps.length + composeApps.length;
@@ -269,14 +255,7 @@ export default async function handler(
 					});
 					continue;
 				}
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
+				await myQueue.add({ ...jobData });
 			}
 
 			const composeApps = await db.query.compose.findMany({
@@ -317,14 +296,7 @@ export default async function handler(
 					continue;
 				}
 
-				await myQueue.add(
-					"deployments",
-					{ ...jobData },
-					{
-						removeOnComplete: true,
-						removeOnFail: true,
-					},
-				);
+				await myQueue.add({ ...jobData });
 			}
 
 			const totalApps = apps.length + composeApps.length;
@@ -531,14 +503,7 @@ export default async function handler(
 						});
 						continue;
 					}
-					await myQueue.add(
-						"deployments",
-						{ ...jobData },
-						{
-							removeOnComplete: true,
-							removeOnFail: true,
-						},
-					);
+					await myQueue.add({ ...jobData });
 				}
 			}
 			return res.status(200).json({ message: "Apps Deployed" });

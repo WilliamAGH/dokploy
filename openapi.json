@@ -3771,6 +3771,18 @@
                   },
                   "detachDokployNetwork": {
                     "type": "boolean"
+                  },
+                  "expectedDockerImage": {
+                    "type": "string"
+                  },
+                  "expectedLabelsSwarm": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "string"
+                    }
                   }
                 },
                 "required": [
@@ -3951,6 +3963,24 @@
                   },
                   "description": {
                     "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_-]+$"
+                  },
+                  "expectedDockerImage": {
+                    "type": "string"
+                  },
+                  "expectedLabelsSwarm": {
+                    "type": "object",
+                    "propertyNames": {
+                      "type": "string"
+                    },
+                    "additionalProperties": {
+                      "type": "string"
+                    }
                   }
                 },
                 "required": [

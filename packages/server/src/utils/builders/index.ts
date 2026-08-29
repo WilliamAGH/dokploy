@@ -42,6 +42,7 @@ export type ApplicationNested = InferResultType<
 export const getBuildCommand = async (
 	rawApplication: ApplicationNested,
 	sourceRevision?: string,
+	deploymentId?: string,
 ) => {
 	const application = await withResolvedVaultRefs(rawApplication);
 	let command = "";
@@ -75,7 +76,7 @@ export const getBuildCommand = async (
 		application.buildRegistry ||
 		application.rollbackRegistry
 	) {
-		command += await uploadImageRemoteCommand(application);
+		command += await uploadImageRemoteCommand(application, deploymentId);
 	}
 
 	return command;
@@ -84,6 +85,7 @@ export const getBuildCommand = async (
 export const mechanizeDockerContainer = async (
 	rawApplication: ApplicationNested,
 	sourceRevision?: string,
+	deploymentId?: string,
 ) => {
 	const application = await withResolvedVaultRefs(rawApplication);
 	const {
@@ -154,7 +156,9 @@ export const mechanizeDockerContainer = async (
 						Args: args,
 					}),
 				...(Ulimits && { Ulimits }),
-				Labels,
+				Labels: deploymentId
+					? { ...Labels, "dokploy.deployment.id": deploymentId }
+					: Labels,
 			},
 			Networks: resolvedNetworks,
 			RestartPolicy,
