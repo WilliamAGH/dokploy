@@ -75,6 +75,9 @@ vi.mock("@dokploy/server/utils/vault", () => ({
 const { createRollback } = await import("@dokploy/server/services/rollbacks");
 
 describe("createRollback source revision snapshot", () => {
+	const candidateImage = `registry.example.com/app@sha256:${"a".repeat(64)}`;
+	const baselineImage = `registry.example.com/app@sha256:${"b".repeat(64)}`;
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 
@@ -149,6 +152,45 @@ describe("createRollback source revision snapshot", () => {
 		expect(mocks.persistedRollback).toHaveBeenCalledWith(
 			expect.objectContaining({
 				fullContext: expect.objectContaining({ sourceRevision }),
+			}),
+		);
+	});
+
+	it("uses the live immutable Docker baseline image and labels", async () => {
+		mocks.findApplicationById.mockResolvedValue({
+			buildRegistry: null,
+			buildRegistryId: null,
+			buildServerId: "build-server-id",
+			deployments: [],
+			dockerImage: candidateImage,
+			github: null,
+			labelsSwarm: {
+				"otel.service.version": "${DOKPLOY_SOURCE_REVISION}",
+			},
+			registry: null,
+			registryId: null,
+			rollbackRegistry: null,
+			rollbackRegistryId: null,
+			serverId: null,
+			sourceType: "docker",
+		});
+
+		await createRollback({
+			appName: "crawl4ai-production",
+			deploymentId: "deployment-id",
+			rollbackSource: {
+				image: baselineImage,
+				labels: { "otel.service.version": sourceRevision },
+			},
+		});
+
+		expect(mocks.getImageConfig).not.toHaveBeenCalled();
+		expect(mocks.persistedRollback).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fullContext: expect.objectContaining({
+					dockerImage: baselineImage,
+					labelsSwarm: { "otel.service.version": sourceRevision },
+				}),
 			}),
 		);
 	});

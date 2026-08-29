@@ -37,10 +37,15 @@ import {
 } from "./registry";
 
 export const createRollback = async (
-	input: z.infer<typeof createRollbackSchema>,
+	input: z.infer<typeof createRollbackSchema> & {
+		rollbackSource?: {
+			image: string;
+			labels: Record<string, string>;
+		};
+	},
 ) => {
 	return await db.transaction(async (tx) => {
-		const { fullContext, ...other } = input;
+		const { fullContext, rollbackSource, ...other } = input;
 		const rollback = await tx
 			.insert(rollbacks)
 			.values(other)
@@ -76,9 +81,10 @@ export const createRollback = async (
 		const rollbackRegistry = rest.rollbackRegistryId
 			? await findRegistryByIdWithCredentials(rest.rollbackRegistryId)
 			: rest.rollbackRegistry;
-		const requiresSourceRevision = Object.values(
-			rest.labelsSwarm ?? {},
-		).includes(sourceRevisionLabelPlaceholder);
+		const rollbackLabels = rollbackSource?.labels ?? rest.labelsSwarm;
+		const requiresSourceRevision = Object.values(rollbackLabels ?? {}).includes(
+			sourceRevisionLabelPlaceholder,
+		);
 		const sourceRevision = requiresSourceRevision
 			? sourceRevisionSchema.parse(
 					(
@@ -92,6 +98,11 @@ export const createRollback = async (
 
 		const fullContextWithCredentials = {
 			...rest,
+			...(rest.sourceType === "docker" &&
+				rollbackSource && {
+					dockerImage: rollbackSource.image,
+					labelsSwarm: rollbackSource.labels,
+				}),
 			registry,
 			buildRegistry,
 			rollbackRegistry,

@@ -5,6 +5,7 @@ import {
 	safeDockerLoginCommand,
 } from "@dokploy/server/services/registry";
 import { createRollback } from "@dokploy/server/services/rollbacks";
+import { getRemoteDocker } from "@dokploy/server/utils/servers/remote-docker";
 import { quote } from "shell-quote";
 import type { ApplicationNested } from "../builders";
 
@@ -60,9 +61,33 @@ export const uploadImageRemoteCommand = async (
 			throw new Error("Deployment not found");
 		}
 		const deploymentId = deployment[0].deploymentId;
+		let rollbackSource:
+			| { image: string; labels: Record<string, string> }
+			| undefined;
+		if (immutableDockerSource) {
+			try {
+				const docker = await getRemoteDocker(application.serverId);
+				const service = await docker.getService(appName).inspect();
+				const container = service.Spec?.TaskTemplate?.ContainerSpec;
+				if (!container?.Image) {
+					throw new Error("Live service image not found");
+				}
+				rollbackSource = {
+					image: container.Image,
+					labels: container.Labels ?? {},
+				};
+			} catch (error) {
+				const statusCode = (error as { statusCode?: number })?.statusCode;
+				if (statusCode === 404) {
+					return commands.join("\n");
+				}
+				throw error;
+			}
+		}
 		const rollback = await createRollback({
 			appName: appName,
 			deploymentId: deploymentId,
+			...(rollbackSource && { rollbackSource }),
 		});
 
 		const r = await findRegistryByIdWithCredentials(
@@ -71,7 +96,13 @@ export const uploadImageRemoteCommand = async (
 		const rollbackRegistryTag = getRegistryTag(r, rollback?.image || "");
 		if (rollbackRegistryTag) {
 			commands.push(`echo "🔄 [Enabled Rollback Registry]"`);
-			commands.push(getRegistryCommands(r, imageName, rollbackRegistryTag));
+			commands.push(
+				getRegistryCommands(
+					r,
+					rollbackSource?.image ?? imageName,
+					rollbackRegistryTag,
+				),
+			);
 		}
 	}
 	try {

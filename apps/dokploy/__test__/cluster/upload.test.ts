@@ -1,14 +1,20 @@
 import type { Registry } from "@dokploy/server";
 import { getRegistryTag, uploadImageRemoteCommand } from "@dokploy/server";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { findDeploymentsMock, findRegistryMock, createRollbackMock } = vi.hoisted(
-	() => ({
-		findDeploymentsMock: vi.fn(),
-		findRegistryMock: vi.fn(),
-		createRollbackMock: vi.fn(),
-	}),
-);
+const {
+	findDeploymentsMock,
+	findRegistryMock,
+	createRollbackMock,
+	serviceInspectMock,
+	getRemoteDockerMock,
+} = vi.hoisted(() => ({
+	findDeploymentsMock: vi.fn(),
+	findRegistryMock: vi.fn(),
+	createRollbackMock: vi.fn(),
+	serviceInspectMock: vi.fn(),
+	getRemoteDockerMock: vi.fn(),
+}));
 
 vi.mock("@dokploy/server/services/deployment", () => ({
 	findAllDeploymentsByApplicationId: findDeploymentsMock,
@@ -22,6 +28,20 @@ vi.mock("@dokploy/server/services/registry", async (importOriginal) => ({
 vi.mock("@dokploy/server/services/rollbacks", () => ({
 	createRollback: createRollbackMock,
 }));
+vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
+	getRemoteDocker: getRemoteDockerMock,
+}));
+
+beforeEach(() => {
+	findDeploymentsMock.mockReset();
+	findRegistryMock.mockReset();
+	createRollbackMock.mockReset();
+	serviceInspectMock.mockReset();
+	getRemoteDockerMock.mockReset();
+	getRemoteDockerMock.mockResolvedValue({
+		getService: vi.fn(() => ({ inspect: serviceInspectMock })),
+	});
+});
 
 describe("getRegistryTag", () => {
 	// Helper to create a mock registry
@@ -264,7 +284,6 @@ describe("getRegistryTag", () => {
 });
 
 it("uses immutable Docker source images without retagging them", async () => {
-	findRegistryMock.mockReset();
 	const command = await uploadImageRemoteCommand({
 		sourceType: "docker",
 		dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
@@ -275,7 +294,7 @@ it("uses immutable Docker source images without retagging them", async () => {
 	expect(findRegistryMock).not.toHaveBeenCalled();
 });
 
-it("preserves rollback publication for immutable Docker sources", async () => {
+it("publishes the live immutable Docker image as the rollback alias", async () => {
 	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
 	createRollbackMock.mockResolvedValue({ image: "app:v1" });
 	findRegistryMock.mockResolvedValue({
@@ -286,18 +305,76 @@ it("preserves rollback publication for immutable Docker sources", async () => {
 		username: "user",
 		password: "password",
 	});
-	const digest = `registry.example.com/app@sha256:${"a".repeat(64)}`;
+	const candidateImage = `registry.example.com/app@sha256:${"a".repeat(64)}`;
+	const baselineImage = `registry.example.com/app@sha256:${"b".repeat(64)}`;
+	serviceInspectMock.mockResolvedValue({
+		Spec: {
+			TaskTemplate: {
+				ContainerSpec: {
+					Image: baselineImage,
+					Labels: { "otel.service.version": "baseline" },
+				},
+			},
+		},
+	});
 	const command = await uploadImageRemoteCommand({
 		applicationId: "application-id",
 		appName: "app",
 		sourceType: "docker",
-		dockerImage: digest,
+		dockerImage: candidateImage,
 		registry: { registryId: "unused-for-immutable-source" },
 		rollbackActive: true,
 		rollbackRegistry: { registryId: "rollback-registry" },
+		serverId: "server-id",
 	} as never);
 
+	expect(createRollbackMock).toHaveBeenCalledWith({
+		appName: "app",
+		deploymentId: "deployment-id",
+		rollbackSource: {
+			image: baselineImage,
+			labels: { "otel.service.version": "baseline" },
+		},
+	});
 	expect(command).toContain("Enabled Rollback Registry");
 	expect(command).toContain("docker image inspect");
-	expect(command).toContain("a".repeat(64));
+	expect(command).toContain("b".repeat(64));
+	expect(command).not.toContain("a".repeat(64));
+});
+
+it("does not create a rollback record before the first immutable Docker deploy", async () => {
+	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
+	serviceInspectMock.mockRejectedValue({ statusCode: 404 });
+
+	const command = await uploadImageRemoteCommand({
+		applicationId: "application-id",
+		appName: "app",
+		sourceType: "docker",
+		dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
+		rollbackActive: true,
+		rollbackRegistry: { registryId: "rollback-registry" },
+		serverId: "server-id",
+	} as never);
+
+	expect(command).toBe("");
+	expect(createRollbackMock).not.toHaveBeenCalled();
+	expect(findRegistryMock).not.toHaveBeenCalled();
+});
+
+it("does not hide immutable Docker baseline inspection failures", async () => {
+	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
+	serviceInspectMock.mockRejectedValue(new Error("manager unavailable"));
+
+	await expect(
+		uploadImageRemoteCommand({
+			applicationId: "application-id",
+			appName: "app",
+			sourceType: "docker",
+			dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			serverId: "server-id",
+		} as never),
+	).rejects.toThrow("manager unavailable");
+	expect(createRollbackMock).not.toHaveBeenCalled();
 });
