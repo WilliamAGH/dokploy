@@ -12,6 +12,7 @@ import {
 	calculateResources,
 	generateBindMounts,
 	generateConfigContainer,
+	generateFileMounts,
 	generateVolumeMounts,
 	prepareEnvironmentVariables,
 } from "../utils/docker/utils";
@@ -274,6 +275,7 @@ const rollbackApplication = async (
 		memoryReservation,
 		cpuReservation,
 		command,
+		args,
 		ports,
 	} = resolvedContext;
 
@@ -298,6 +300,8 @@ const rollbackApplication = async (
 		Mode,
 		RollbackConfig,
 		UpdateConfig,
+		StopGracePeriod,
+		EndpointSpec,
 		Ulimits,
 	} = generateConfigContainer(
 		resolvedContext as Parameters<typeof generateConfigContainer>[0],
@@ -305,6 +309,10 @@ const rollbackApplication = async (
 	);
 
 	const bindsMount = generateBindMounts(mounts);
+	const filesMount = generateFileMounts(
+		appName,
+		resolvedContext as Parameters<typeof generateFileMounts>[1],
+	);
 	const envVariables = prepareEnvironmentVariables(
 		env,
 		resolvedContext.environment.project.env,
@@ -328,13 +336,11 @@ const rollbackApplication = async (
 				HealthCheck,
 				Image: rollbackImage,
 				Env: envVariables,
-				Mounts: [...volumesMount, ...bindsMount],
-				...(command
-					? {
-							Command: ["/bin/sh"],
-							Args: ["-c", command],
-						}
-					: {}),
+				Mounts: [...volumesMount, ...bindsMount, ...filesMount],
+				...(StopGracePeriod !== null &&
+					StopGracePeriod !== undefined && { StopGracePeriod }),
+				...(command && { Command: command.split(" ") }),
+				...(args && args.length > 0 && { Args: args }),
 				...(Ulimits && { Ulimits }),
 				Labels,
 			},
@@ -347,7 +353,7 @@ const rollbackApplication = async (
 		},
 		Mode,
 		RollbackConfig,
-		EndpointSpec: {
+		EndpointSpec: EndpointSpec ?? {
 			Ports: ports.map((port) => ({
 				PublishMode: port.publishMode,
 				Protocol: port.protocol,
