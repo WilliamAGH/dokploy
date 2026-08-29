@@ -311,10 +311,10 @@ const rollbackApplication = async (
 		resolvedContext.environment.env,
 	);
 
-	let rollbackImage = image;
-	if (rollbackRegistry) {
-		rollbackImage = getRegistryTag(rollbackRegistry, image);
-	}
+	const rollbackImage =
+		rollbackRegistry && !/@sha256:[a-f0-9]{64}$/.test(image)
+			? getRegistryTag(rollbackRegistry, image)
+			: image;
 
 	const settings: CreateServiceOptions = {
 		authconfig: {
