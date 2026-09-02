@@ -242,7 +242,8 @@ export const deployApplication = async ({
 			await updateDeployment(deploymentId, {
 				status: "error",
 				finishedAt: new Date().toISOString(),
-				errorMessage: "Application deployment metadata changed after submission",
+				errorMessage:
+					"Application deployment metadata changed after submission",
 			});
 		}
 		throw new Error("Application deployment metadata changed after submission");

@@ -1,0 +1,162 @@
+name: Fork CI
+
+on:
+  push:
+    branches: [canary]
+  pull_request:
+    branches: [canary]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: ghcr.io/williamagh/dokploy
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 10.22.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.4.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check formatting
+        run: |
+          pnpm exec biome format . --write --no-errors-on-unmatched --files-ignore-unknown=true --reporter=summary
+          git diff --exit-code
+
+      - name: Verify generated OpenAPI
+        run: |
+          rm openapi.json
+          pnpm generate:openapi
+          test -s openapi.json
+          git diff --exit-code -- openapi.json
+
+      - name: Publish generated OpenAPI
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: openapi-${{ github.sha }}
+          path: openapi.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/canary'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          version: v0.33.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare production environment files
+        run: |
+          cp apps/dokploy/.env.production.example .env.production
+          cp apps/dokploy/.env.production.example apps/dokploy/.env.production
+
+      - name: Build and publish source image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ${{ env.IMAGE_NAME }}:canary-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=dokploy-canary
+          cache-to: type=gha,mode=max,scope=dokploy-canary
+
+      - name: Verify image and promote successful canary aliases
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+          manifest=$(docker buildx imagetools inspect "${IMAGE_NAME}@${DIGEST}" --raw)
+          platforms=$(jq -c '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort' <<< "$manifest")
+          test "$platforms" = '["amd64","arm64"]'
+
+          while read -r image_digest; do
+            labels=$(docker buildx imagetools inspect "${IMAGE_NAME}@${image_digest}" --format '{{json .Image.Config.Labels}}')
+            jq -e --arg revision "$GITHUB_SHA" '."org.opencontainers.image.revision" == $revision' <<< "$labels"
+          done < <(jq -r '.manifests[] | select(.platform.os == "linux") | .digest' <<< "$manifest")
+
+          for architecture in amd64 arm64; do
+            docker pull --platform "linux/${architecture}" "${IMAGE_NAME}@${DIGEST}"
+            docker run --rm --platform "linux/${architecture}" --entrypoint node "${IMAGE_NAME}@${DIGEST}" --version | grep -Eq '^v24\.'
+          done
+
+          canary_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/canary" --jq .object.sha)
+          if [ "$canary_sha" != "$GITHUB_SHA" ]; then
+            echo "Canary moved to ${canary_sha}; keeping ${DIGEST} by digest without moving aliases."
+            exit 0
+          fi
+
+          version=$(node -p "require('./apps/dokploy/package.json').version")
+          short_sha=${GITHUB_SHA:0:12}
+          aliases=(
+            "${IMAGE_NAME}:canary-latest"
+            "${IMAGE_NAME}:canary-${version}"
+            "${IMAGE_NAME}:canary-${version}-${short_sha}"
+          )
+          docker buildx imagetools create \
+            -t "${aliases[0]}" \
+            -t "${aliases[1]}" \
+            -t "${aliases[2]}" \
+            "${IMAGE_NAME}@${DIGEST}"
+
+          for alias in "${aliases[@]}"; do
+            test "$(docker buildx imagetools inspect "$alias" --format '{{.Manifest.Digest}}')" = "$DIGEST"
+          done
+
+          {
+            echo "### Published Dokploy fork image"
+            echo
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo "- Source: \`${GITHUB_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -101,9 +101,7 @@ test("renders and removes the application-owned Swarm VIP transport", async () =
 	expect(enabledReuse.http?.serversTransports).toEqual({
 		"custom-transport": {},
 	});
-	expect(
-		enabledReuse.http?.services?.["crawl4ai-service-1"],
-	).toEqual({
+	expect(enabledReuse.http?.services?.["crawl4ai-service-1"]).toEqual({
 		loadBalancer: {
 			servers: [{ url: "http://crawl4ai:11235" }],
 			passHostHeader: true,

@@ -310,16 +310,19 @@ it("publishes the live immutable Docker image as the rollback alias", async () =
 			},
 		},
 	});
-	const command = await uploadImageRemoteCommand({
-		applicationId: "application-id",
-		appName: "app",
-		sourceType: "docker",
-		dockerImage: candidateImage,
-		registry: { registryId: "unused-for-immutable-source" },
-		rollbackActive: true,
-		rollbackRegistry: { registryId: "rollback-registry" },
-		serverId: "server-id",
-	} as never, "deployment-id");
+	const command = await uploadImageRemoteCommand(
+		{
+			applicationId: "application-id",
+			appName: "app",
+			sourceType: "docker",
+			dockerImage: candidateImage,
+			registry: { registryId: "unused-for-immutable-source" },
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			serverId: "server-id",
+		} as never,
+		"deployment-id",
+	);
 
 	expect(createRollbackMock).toHaveBeenCalledWith({
 		appName: "app",
@@ -338,15 +341,18 @@ it("publishes the live immutable Docker image as the rollback alias", async () =
 it("does not create a rollback record before the first immutable Docker deploy", async () => {
 	serviceInspectMock.mockRejectedValue({ statusCode: 404 });
 
-	const command = await uploadImageRemoteCommand({
-		applicationId: "application-id",
-		appName: "app",
-		sourceType: "docker",
-		dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
-		rollbackActive: true,
-		rollbackRegistry: { registryId: "rollback-registry" },
-		serverId: "server-id",
-	} as never, "deployment-id");
+	const command = await uploadImageRemoteCommand(
+		{
+			applicationId: "application-id",
+			appName: "app",
+			sourceType: "docker",
+			dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			serverId: "server-id",
+		} as never,
+		"deployment-id",
+	);
 
 	expect(command).toBe("");
 	expect(createRollbackMock).not.toHaveBeenCalled();
@@ -357,15 +363,18 @@ it("does not hide immutable Docker baseline inspection failures", async () => {
 	serviceInspectMock.mockRejectedValue(new Error("manager unavailable"));
 
 	await expect(
-		uploadImageRemoteCommand({
-			applicationId: "application-id",
-			appName: "app",
-			sourceType: "docker",
-			dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
-			rollbackActive: true,
-			rollbackRegistry: { registryId: "rollback-registry" },
-			serverId: "server-id",
-		} as never, "deployment-id"),
+		uploadImageRemoteCommand(
+			{
+				applicationId: "application-id",
+				appName: "app",
+				sourceType: "docker",
+				dockerImage: `registry.example.com/app@sha256:${"a".repeat(64)}`,
+				rollbackActive: true,
+				rollbackRegistry: { registryId: "rollback-registry" },
+				serverId: "server-id",
+			} as never,
+			"deployment-id",
+		),
 	).rejects.toThrow("manager unavailable");
 	expect(createRollbackMock).not.toHaveBeenCalled();
 });

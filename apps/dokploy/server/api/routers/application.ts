@@ -863,7 +863,10 @@ export const applicationRouter = createTRPCRouter({
 			} = input;
 			const replacementDockerImage = rest.dockerImage;
 			const replacementLabelsSwarm = rest.labelsSwarm;
-			if ((expectedDockerImage === undefined) !== (expectedLabelsSwarm === undefined)) {
+			if (
+				(expectedDockerImage === undefined) !==
+				(expectedLabelsSwarm === undefined)
+			) {
 				throw new TRPCError({
 					code: "BAD_REQUEST",
 					message: "Both expected deployment metadata fields are required",

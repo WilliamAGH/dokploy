@@ -21,26 +21,25 @@ const {
 	createServiceMock,
 	getRemoteDockerMock,
 	findRegistryMock,
-} =
-	vi.hoisted(() => {
-		const inspect = vi.fn<() => Promise<never>>();
-		const getService = vi.fn(() => ({ inspect }));
-		const createService = vi.fn<
-			(opts: MockCreateServiceOptions) => Promise<void>
-		>(async () => undefined);
-		const getRemoteDocker = vi.fn(async () => ({
-			getService,
-			createService,
-		}));
-		const findRegistry = vi.fn();
-		return {
-			inspectMock: inspect,
-			getServiceMock: getService,
-			createServiceMock: createService,
-			getRemoteDockerMock: getRemoteDocker,
-			findRegistryMock: findRegistry,
-		};
-	});
+} = vi.hoisted(() => {
+	const inspect = vi.fn<() => Promise<never>>();
+	const getService = vi.fn(() => ({ inspect }));
+	const createService = vi.fn<
+		(opts: MockCreateServiceOptions) => Promise<void>
+	>(async () => undefined);
+	const getRemoteDocker = vi.fn(async () => ({
+		getService,
+		createService,
+	}));
+	const findRegistry = vi.fn();
+	return {
+		inspectMock: inspect,
+		getServiceMock: getService,
+		createServiceMock: createService,
+		getRemoteDockerMock: getRemoteDocker,
+		findRegistryMock: findRegistry,
+	};
+});
 
 vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 	getRemoteDocker: getRemoteDockerMock,

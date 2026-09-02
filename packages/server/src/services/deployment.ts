@@ -161,16 +161,16 @@ export const createDeployment = async (
 		}
 
 		const deploymentValues = {
-				applicationId: deployment.applicationId,
-				title: deployment.title || "Deployment",
-				status: "running",
-				logPath: logFilePath,
-				description: deployment.description || "",
-				startedAt: new Date().toISOString(),
-				...(application.buildServerId && {
-					buildServerId: application.buildServerId,
-				}),
-			} as const;
+			applicationId: deployment.applicationId,
+			title: deployment.title || "Deployment",
+			status: "running",
+			logPath: logFilePath,
+			description: deployment.description || "",
+			startedAt: new Date().toISOString(),
+			...(application.buildServerId && {
+				buildServerId: application.buildServerId,
+			}),
+		} as const;
 		const deploymentCreate = deployment.deploymentId
 			? await db
 					.update(deployments)
@@ -187,15 +187,15 @@ export const createDeployment = async (
 		return deploymentCreate[0];
 	} catch (error) {
 		const failedDeployment = {
-				applicationId: deployment.applicationId,
-				title: deployment.title || "Deployment",
-				status: "error",
-				logPath: "",
-				description: deployment.description || "",
-				errorMessage: `An error have occurred: ${error instanceof Error ? error.message : error}`,
-				startedAt: new Date().toISOString(),
-				finishedAt: new Date().toISOString(),
-			} as const;
+			applicationId: deployment.applicationId,
+			title: deployment.title || "Deployment",
+			status: "error",
+			logPath: "",
+			description: deployment.description || "",
+			errorMessage: `An error have occurred: ${error instanceof Error ? error.message : error}`,
+			startedAt: new Date().toISOString(),
+			finishedAt: new Date().toISOString(),
+		} as const;
 		if (deployment.deploymentId) {
 			await db
 				.update(deployments)

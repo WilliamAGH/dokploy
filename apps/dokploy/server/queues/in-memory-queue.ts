@@ -192,7 +192,9 @@ export class InMemoryQueue {
 		return this.removeWaitingJobs(predicate).length;
 	}
 
-	removeWaitingJobs(predicate: (data: DeploymentJob) => boolean): DeploymentJob[] {
+	removeWaitingJobs(
+		predicate: (data: DeploymentJob) => boolean,
+	): DeploymentJob[] {
 		const removed: DeploymentJob[] = [];
 		for (const partition of this.partitions.values()) {
 			partition.waiting = partition.waiting.filter((job) => {

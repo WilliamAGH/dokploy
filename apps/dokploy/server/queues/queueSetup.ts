@@ -23,7 +23,9 @@ interface DeploymentQueue {
 	on: (...args: unknown[]) => void;
 	run: () => Promise<void>;
 	removeWaiting: (predicate: (data: DeploymentJob) => boolean) => number;
-	removeWaitingJobs: (predicate: (data: DeploymentJob) => boolean) => DeploymentJob[];
+	removeWaitingJobs: (
+		predicate: (data: DeploymentJob) => boolean,
+	) => DeploymentJob[];
 	clearWaiting: () => number;
 }
 
@@ -114,7 +116,6 @@ export const cleanQueuesByApplication = async (applicationId: string) => {
 		);
 	}
 };
-
 
 export const cleanQueuesByCompose = async (composeId: string) => {
 	const removed = myQueue.removeWaiting(
