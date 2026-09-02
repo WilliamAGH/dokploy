@@ -1,5 +1,5 @@
 {
-  "id": "469a2cda-ecb9-4db2-ba45-e39210697e7b",
+  "id": "c9bd795e-2581-48e8-b8ff-c7a2a5d96dd1",
   "prevId": "8e851600-c994-4d52-a9d0-a8257e22a073",
   "version": "7",
   "dialect": "postgresql",
@@ -1591,13 +1591,6 @@
           "type": "json",
           "primaryKey": false,
           "notNull": false
-        },
-        "swarmVipConnectionReuse": {
-          "name": "swarmVipConnectionReuse",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
         },
         "replicas": {
           "name": "replicas",
@@ -5327,6 +5320,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "dockerId": {
+          "name": "dockerId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "driver": {
           "name": "driver",

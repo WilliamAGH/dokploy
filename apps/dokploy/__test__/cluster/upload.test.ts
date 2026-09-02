@@ -3,22 +3,17 @@ import { getRegistryTag, uploadImageRemoteCommand } from "@dokploy/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
-	findDeploymentsMock,
 	findRegistryMock,
 	createRollbackMock,
 	serviceInspectMock,
 	getRemoteDockerMock,
 } = vi.hoisted(() => ({
-	findDeploymentsMock: vi.fn(),
 	findRegistryMock: vi.fn(),
 	createRollbackMock: vi.fn(),
 	serviceInspectMock: vi.fn(),
 	getRemoteDockerMock: vi.fn(),
 }));
 
-vi.mock("@dokploy/server/services/deployment", () => ({
-	findAllDeploymentsByApplicationId: findDeploymentsMock,
-}));
 vi.mock("@dokploy/server/services/registry", async (importOriginal) => ({
 	...(await importOriginal<
 		typeof import("@dokploy/server/services/registry")
@@ -33,7 +28,6 @@ vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 }));
 
 beforeEach(() => {
-	findDeploymentsMock.mockReset();
 	findRegistryMock.mockReset();
 	createRollbackMock.mockReset();
 	serviceInspectMock.mockReset();
@@ -295,7 +289,6 @@ it("uses immutable Docker source images without retagging them", async () => {
 });
 
 it("publishes the live immutable Docker image as the rollback alias", async () => {
-	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
 	createRollbackMock.mockResolvedValue({ image: "app:v1" });
 	findRegistryMock.mockResolvedValue({
 		registryId: "rollback-registry",
@@ -326,7 +319,7 @@ it("publishes the live immutable Docker image as the rollback alias", async () =
 		rollbackActive: true,
 		rollbackRegistry: { registryId: "rollback-registry" },
 		serverId: "server-id",
-	} as never);
+	} as never, "deployment-id");
 
 	expect(createRollbackMock).toHaveBeenCalledWith({
 		appName: "app",
@@ -343,7 +336,6 @@ it("publishes the live immutable Docker image as the rollback alias", async () =
 });
 
 it("does not create a rollback record before the first immutable Docker deploy", async () => {
-	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
 	serviceInspectMock.mockRejectedValue({ statusCode: 404 });
 
 	const command = await uploadImageRemoteCommand({
@@ -354,7 +346,7 @@ it("does not create a rollback record before the first immutable Docker deploy",
 		rollbackActive: true,
 		rollbackRegistry: { registryId: "rollback-registry" },
 		serverId: "server-id",
-	} as never);
+	} as never, "deployment-id");
 
 	expect(command).toBe("");
 	expect(createRollbackMock).not.toHaveBeenCalled();
@@ -362,7 +354,6 @@ it("does not create a rollback record before the first immutable Docker deploy",
 });
 
 it("does not hide immutable Docker baseline inspection failures", async () => {
-	findDeploymentsMock.mockResolvedValue([{ deploymentId: "deployment-id" }]);
 	serviceInspectMock.mockRejectedValue(new Error("manager unavailable"));
 
 	await expect(
@@ -374,7 +365,7 @@ it("does not hide immutable Docker baseline inspection failures", async () => {
 			rollbackActive: true,
 			rollbackRegistry: { registryId: "rollback-registry" },
 			serverId: "server-id",
-		} as never),
+		} as never, "deployment-id"),
 	).rejects.toThrow("manager unavailable");
 	expect(createRollbackMock).not.toHaveBeenCalled();
 });

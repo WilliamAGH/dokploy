@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
 	addDomainToCompose,
 	addVolumeToComposeFile,
@@ -40,6 +41,7 @@ import {
 	updateDeploymentStatus,
 	updateVolumeInComposeFile,
 } from "@dokploy/server";
+import { paths } from "@dokploy/server/constants";
 import { db } from "@dokploy/server/db";
 import { canEditDeployGitSource } from "@dokploy/server/services/git-provider";
 import {
@@ -649,6 +651,7 @@ export const composeRouter = createTRPCRouter({
 				descriptionLog: input.description || "",
 				server: !!compose.serverId,
 				serverId: compose.serverId ?? undefined,
+				freshVolumes: input.freshVolumes,
 			};
 
 			if (IS_CLOUD && compose.serverId) {
@@ -691,6 +694,7 @@ export const composeRouter = createTRPCRouter({
 				descriptionLog: input.description || "",
 				server: !!compose.serverId,
 				serverId: compose.serverId ?? undefined,
+				freshVolumes: input.freshVolumes,
 			};
 			if (IS_CLOUD && compose.serverId) {
 				deploy(jobData).catch((error) => {
@@ -756,7 +760,12 @@ export const composeRouter = createTRPCRouter({
 				service: ["create"],
 			});
 			const compose = await findComposeById(input.composeId);
-			const command = createCommand(compose);
+			const { COMPOSE_PATH } = paths(!!compose.serverId);
+			const projectPath = join(COMPOSE_PATH, compose.appName, "code");
+			const command = createCommand(
+				compose,
+				compose.mounts.length > 0 ? projectPath : undefined,
+			);
 			return `docker ${command}`;
 		}),
 	refreshToken: protectedProcedure
