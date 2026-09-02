@@ -119,15 +119,20 @@ jobs:
           manifest=$(docker buildx imagetools inspect "${IMAGE_NAME}@${DIGEST}" --raw)
           platforms=$(jq -c '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort' <<< "$manifest")
           test "$platforms" = '["amd64","arm64"]'
-
-          while read -r image_digest; do
-            labels=$(docker buildx imagetools inspect "${IMAGE_NAME}@${image_digest}" --format '{{json .Image.Config.Labels}}')
-            jq -e --arg revision "$GITHUB_SHA" '."org.opencontainers.image.revision" == $revision' <<< "$labels"
-          done < <(jq -r '.manifests[] | select(.platform.os == "linux") | .digest' <<< "$manifest")
+          source_platform_digests=$(jq -cS '[.manifests[] | select(.platform.os == "linux") | {architecture: .platform.architecture, digest: .digest}] | sort_by(.architecture)' <<< "$manifest")
+          image_references=()
 
           for architecture in amd64 arm64; do
-            docker pull --platform "linux/${architecture}" "${IMAGE_NAME}@${DIGEST}"
-            docker run --rm --platform "linux/${architecture}" --entrypoint node "${IMAGE_NAME}@${DIGEST}" --version | grep -Eq '^v24\.'
+            image_digest=$(jq -er --arg architecture "$architecture" '
+              .manifests[]
+              | select(.platform.os == "linux" and .platform.architecture == $architecture)
+              | .digest
+            ' <<< "$manifest")
+            image_references+=("${IMAGE_NAME}@${image_digest}")
+            labels=$(docker buildx imagetools inspect "${IMAGE_NAME}@${image_digest}" --format '{{json .Image.Config.Labels}}')
+            jq -e --arg revision "$GITHUB_SHA" '."org.opencontainers.image.revision" == $revision' <<< "$labels"
+            docker pull --platform "linux/${architecture}" "${IMAGE_NAME}@${image_digest}"
+            docker run --rm --platform "linux/${architecture}" --entrypoint node "${IMAGE_NAME}@${image_digest}" --version | grep -Eq '^v24\.'
           done
 
           canary_sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/canary" --jq .object.sha)
@@ -143,14 +148,14 @@ jobs:
             "${IMAGE_NAME}:canary-${version}"
             "${IMAGE_NAME}:canary-${version}-${short_sha}"
           )
-          docker buildx imagetools create \
-            -t "${aliases[0]}" \
-            -t "${aliases[1]}" \
-            -t "${aliases[2]}" \
-            "${IMAGE_NAME}@${DIGEST}"
 
           for alias in "${aliases[@]}"; do
-            test "$(docker buildx imagetools inspect "$alias" --format '{{.Manifest.Digest}}')" = "$DIGEST"
+            docker manifest create "$alias" "${image_references[@]}"
+            docker manifest push --purge "$alias"
+
+            alias_manifest=$(docker buildx imagetools inspect "$alias" --raw)
+            alias_platform_digests=$(jq -cS '[.manifests[] | select(.platform.os == "linux") | {architecture: .platform.architecture, digest: .digest}] | sort_by(.architecture)' <<< "$alias_manifest")
+            test "$alias_platform_digests" = "$source_platform_digests"
           done
 
           {
