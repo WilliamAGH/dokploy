@@ -27,6 +27,7 @@ import { cloneGiteaRepository } from "@dokploy/server/utils/providers/gitea";
 import { cloneGithubRepository } from "@dokploy/server/utils/providers/github";
 import { cloneGitlabRepository } from "@dokploy/server/utils/providers/gitlab";
 import { createTraefikConfig } from "@dokploy/server/utils/traefik/application";
+import { reconcileSwarmVipConnectionReuse } from "@dokploy/server/utils/traefik/domain";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import type { z } from "zod";
@@ -149,15 +150,99 @@ export const updateApplication = async (
 	applicationData: Partial<Application>,
 ) => {
 	const { appName, ...rest } = applicationData;
-	const application = await db
-		.update(applications)
-		.set({
-			...rest,
-		})
-		.where(eq(applications.applicationId, applicationId))
-		.returning();
+	const update = (executor: Pick<typeof db, "update">) =>
+		executor
+			.update(applications)
+			.set({
+				...rest,
+			})
+			.where(eq(applications.applicationId, applicationId))
+			.returning();
+	const findReconciliationState = (executor: Pick<typeof db, "query">) =>
+		executor.query.applications.findFirst({
+			where: eq(applications.applicationId, applicationId),
+			columns: {
+				appName: true,
+				serverId: true,
+				swarmVipConnectionReuse: true,
+			},
+			with: {
+				previewDeployments: { columns: { appName: true } },
+			},
+		});
+	const getRoutes = (
+		application: NonNullable<
+			Awaited<ReturnType<typeof findReconciliationState>>
+		>,
+	) =>
+		[
+			application.appName,
+			...application.previewDeployments.map((preview) => preview.appName),
+		].map((appName) => ({
+			appName,
+			serverId: application.serverId,
+			swarmVipConnectionReuse: application.swarmVipConnectionReuse,
+		}));
 
-	return application[0];
+	if (!("swarmVipConnectionReuse" in applicationData)) {
+		return (await update(db))[0];
+	}
+
+	try {
+		return await db.transaction(async (tx) => {
+			const applicationBeforeUpdate = await findReconciliationState(tx);
+			if (!applicationBeforeUpdate) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "Application not found",
+				});
+			}
+
+			const application = await update(tx);
+			for (const route of getRoutes(applicationBeforeUpdate)) {
+				await reconcileSwarmVipConnectionReuse({
+					...route,
+					swarmVipConnectionReuse:
+						applicationData.swarmVipConnectionReuse ??
+						applicationBeforeUpdate.swarmVipConnectionReuse,
+				});
+			}
+
+			return application[0];
+		});
+	} catch (error) {
+		let applicationAfterFailure: NonNullable<
+			Awaited<ReturnType<typeof findReconciliationState>>
+		>;
+		try {
+			const observedApplication = await findReconciliationState(db);
+			if (!observedApplication) {
+				throw new Error("Application not found after transaction failure");
+			}
+			applicationAfterFailure = observedApplication;
+		} catch (readError) {
+			throw new AggregateError(
+				[error, readError],
+				"Application update and reconciliation read failed",
+			);
+		}
+		const compensationErrors = (
+			await Promise.allSettled(
+				getRoutes(applicationAfterFailure).map((route) =>
+					reconcileSwarmVipConnectionReuse(route),
+				),
+			)
+		)
+			.filter((result) => result.status === "rejected")
+			.map((result) => result.reason);
+		if (compensationErrors.length > 0) {
+			throw new AggregateError(
+				[error, ...compensationErrors],
+				"Route reconciliation and compensation failed",
+			);
+		}
+		throw error;
+	}
 };
 
 export const updateApplicationStatus = async (

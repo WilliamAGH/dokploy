@@ -3,14 +3,18 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import { paths } from "@dokploy/server/constants";
 import type { Domain } from "@dokploy/server/services/domain";
+import type { ApplicationNested } from "@dokploy/server/utils/builders";
 import { quote } from "shell-quote";
 import { parse, stringify } from "yaml";
 import {
+	ExecError,
 	execAsync,
 	execAsyncRemote,
 	writeFileRemote,
 } from "../process/execAsync";
 import type { FileConfig, HttpLoadBalancerService } from "./file-types";
+
+const REMOTE_CONFIG_NOT_FOUND_EXIT_CODE = 44;
 
 export const createTraefikConfig = (appName: string) => {
 	const defaultPort = 3000;
@@ -109,20 +113,26 @@ export const loadOrCreateConfigRemote = async (
 	const { DYNAMIC_TRAEFIK_PATH } = paths(true);
 	const fileConfig: FileConfig = { http: { routers: {}, services: {} } };
 	const configPath = path.join(DYNAMIC_TRAEFIK_PATH, `${appName}.yml`);
+	const quotedConfigPath = quote([configPath]);
 	try {
 		const { stdout } = await execAsyncRemote(
 			serverId,
-			`cat ${quote([configPath])}`,
+			`if [ -e ${quotedConfigPath} ]; then cat ${quotedConfigPath}; else exit ${REMOTE_CONFIG_NOT_FOUND_EXIT_CODE}; fi`,
 		);
 
-		if (!stdout) return fileConfig;
-
-		const parsedConfig = (parse(stdout) as FileConfig) || {
-			http: { routers: {}, services: {} },
-		};
+		const parsedConfig = parse(stdout) as FileConfig | null | undefined;
+		if (!parsedConfig) {
+			throw new Error(`Remote Traefik config is empty for ${appName}`);
+		}
 		return parsedConfig;
-	} catch {
-		return fileConfig;
+	} catch (error) {
+		if (
+			error instanceof ExecError &&
+			error.exitCode === REMOTE_CONFIG_NOT_FOUND_EXIT_CODE
+		) {
+			return fileConfig;
+		}
+		throw error;
 	}
 };
 
@@ -258,14 +268,10 @@ export const writeTraefikConfig = (
 	traefikConfig: FileConfig,
 	appName: string,
 ) => {
-	try {
-		const { DYNAMIC_TRAEFIK_PATH } = paths();
-		const configPath = path.join(DYNAMIC_TRAEFIK_PATH, `${appName}.yml`);
-		const yamlStr = stringify(traefikConfig);
-		fs.writeFileSync(configPath, yamlStr, "utf8");
-	} catch (e) {
-		console.error("Error saving the YAML config file:", e);
-	}
+	const { DYNAMIC_TRAEFIK_PATH } = paths();
+	const configPath = path.join(DYNAMIC_TRAEFIK_PATH, `${appName}.yml`);
+	const yamlStr = stringify(traefikConfig);
+	fs.writeFileSync(configPath, yamlStr, "utf8");
 };
 
 export const writeTraefikConfigRemote = async (
@@ -273,14 +279,10 @@ export const writeTraefikConfigRemote = async (
 	appName: string,
 	serverId: string,
 ) => {
-	try {
-		const { DYNAMIC_TRAEFIK_PATH } = paths(true);
-		const configPath = path.join(DYNAMIC_TRAEFIK_PATH, `${appName}.yml`);
-		const yamlStr = stringify(traefikConfig);
-		await writeFileRemote(serverId, configPath, yamlStr);
-	} catch (e) {
-		console.error("Error saving the YAML config file:", e);
-	}
+	const { DYNAMIC_TRAEFIK_PATH } = paths(true);
+	const configPath = path.join(DYNAMIC_TRAEFIK_PATH, `${appName}.yml`);
+	const yamlStr = stringify(traefikConfig);
+	await writeFileRemote(serverId, configPath, yamlStr);
 };
 
 const isEmptyHttpRoutersAndServices = (traefikConfig: FileConfig) =>
@@ -304,13 +306,16 @@ export const writeAppTraefikConfig = async (
 };
 
 export const createServiceConfig = (
-	appName: string,
+	application: Pick<ApplicationNested, "appName" | "swarmVipConnectionReuse">,
 	domain: Domain,
 ): {
 	loadBalancer: HttpLoadBalancerService;
 } => ({
 	loadBalancer: {
-		servers: [{ url: `http://${appName}:${domain.port || 80}` }],
+		servers: [{ url: `http://${application.appName}:${domain.port || 80}` }],
 		passHostHeader: true,
+		...(!application.swarmVipConnectionReuse && {
+			serversTransport: `${application.appName}-swarm-vip`,
+		}),
 	},
 });

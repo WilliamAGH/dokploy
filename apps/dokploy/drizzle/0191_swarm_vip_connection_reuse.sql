@@ -1,0 +1,1 @@
+ALTER TABLE "application" ADD COLUMN "swarmVipConnectionReuse" boolean DEFAULT true NOT NULL;

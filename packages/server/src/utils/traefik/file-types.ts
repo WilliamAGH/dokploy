@@ -15,6 +15,12 @@ export interface FileConfig {
 		services?: {
 			[k: string]: HttpService;
 		};
+		serversTransports?: {
+			[k: string]: {
+				maxIdleConnsPerHost?: number;
+				[k: string]: unknown;
+			};
+		};
 		/**
 		 * Attached to the routers, pieces of middleware are a means of tweaking the requests before they are sent to your service (or before the answer from the services are sent to the clients).
 		 *
