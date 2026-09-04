@@ -1,6 +1,6 @@
 {
-  "id": "3245801b-bd78-477e-baf0-2a5f7a3a2071",
-  "prevId": "d3186290-04e7-4f38-9216-d55a766b1dae",
+  "id": "0c233e94-f94f-4a60-aca9-cadda3c2a460",
+  "prevId": "3245801b-bd78-477e-baf0-2a5f7a3a2071",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1591,6 +1591,13 @@
           "type": "json",
           "primaryKey": false,
           "notNull": false
+        },
+        "swarmVipConnectionReuse": {
+          "name": "swarmVipConnectionReuse",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         },
         "replicas": {
           "name": "replicas",

@@ -14161,6 +14161,23 @@
                           "apiKey",
                           "secretApiKey"
                         ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "providerType": {
+                            "type": "string",
+                            "const": "infomaniak"
+                          },
+                          "apiToken": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "providerType",
+                          "apiToken"
+                        ]
                       }
                     ],
                     "type": "object"
@@ -14320,6 +14337,23 @@
                           "providerType",
                           "apiKey",
                           "secretApiKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "providerType": {
+                            "type": "string",
+                            "const": "infomaniak"
+                          },
+                          "apiToken": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "providerType",
+                          "apiToken"
                         ]
                       }
                     ],
@@ -14727,6 +14761,23 @@
                           "providerType",
                           "apiKey",
                           "secretApiKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "providerType": {
+                            "type": "string",
+                            "const": "infomaniak"
+                          },
+                          "apiToken": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "providerType",
+                          "apiToken"
                         ]
                       }
                     ],
