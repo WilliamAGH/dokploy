@@ -7,6 +7,12 @@ export interface ExecErrorDetails {
 	serverId?: string | null;
 }
 
+const redactDockerLoginPassword = (text: string | undefined) =>
+	text?.replace(
+		/printf %s '(?:[^']|'\\'')*' \| docker login/g,
+		"printf %s '***' | docker login",
+	);
+
 export class ExecError extends Error {
 	public readonly command: string;
 	public readonly stdout?: string;
@@ -16,13 +22,20 @@ export class ExecError extends Error {
 	public readonly serverId?: string | null;
 
 	constructor(message: string, details: ExecErrorDetails) {
-		super(message);
+		const containsRegistryPassword = details.command.includes("| docker login");
+		const redact = containsRegistryPassword
+			? redactDockerLoginPassword
+			: (text: string | undefined) => text;
+		super(redact(message));
 		this.name = "ExecError";
-		this.command = details.command;
-		this.stdout = details.stdout;
-		this.stderr = details.stderr;
+		this.command = redact(details.command) ?? "";
+		this.stdout = redact(details.stdout);
+		this.stderr = redact(details.stderr);
 		this.exitCode = details.exitCode;
-		this.originalError = details.originalError;
+		this.originalError =
+			containsRegistryPassword && details.originalError
+				? new Error(redact(details.originalError.message))
+				: details.originalError;
 		this.serverId = details.serverId;
 
 		// Maintains proper stack trace for where our error was thrown (only available on V8)

@@ -1,7 +1,7 @@
 import {
 	clearOldDeployments,
-	createDeploymentSubmission,
 	createApplication,
+	createDeploymentSubmission,
 	createDomain,
 	deleteAllMiddlewares,
 	findApplicationById,
@@ -24,9 +24,9 @@ import {
 	removePreviewDeployment,
 	removeService,
 	removeTraefikConfig,
-	sourceRevisionLabelPlaceholder,
 	scaleService,
 	scaleServiceRemote,
+	sourceRevisionLabelPlaceholder,
 	startService,
 	startServiceRemote,
 	stopService,
@@ -337,7 +337,11 @@ export const applicationRouter = createTRPCRouter({
 						"Unable to determine a valid checkout source revision",
 					);
 				}
-				await mechanizeDockerContainer(application, commitInfo?.hash);
+				await mechanizeDockerContainer(
+					application,
+					commitInfo?.hash,
+					`reload-${nanoid()}`,
+				);
 				await updateApplicationStatus(input.applicationId, "done");
 				await audit(ctx, {
 					action: "reload",

@@ -4,6 +4,10 @@ import type { InferResultType } from "@dokploy/server/types/with";
 import type { CreateServiceOptions } from "dockerode";
 import { getRegistryTag, uploadImageRemoteCommand } from "../cluster/upload";
 import {
+	DEPLOYMENT_ID_LABEL,
+	updateSwarmService,
+} from "../docker/swarm-update";
+import {
 	calculateResources,
 	generateBindMounts,
 	generateConfigContainer,
@@ -13,6 +17,7 @@ import {
 } from "../docker/utils";
 import { getRemoteDocker } from "../servers/remote-docker";
 import { withResolvedVaultRefs } from "../vault";
+import { getAuthConfig } from "./auth";
 import { getDockerCommand } from "./docker-file";
 import { getHerokuCommand } from "./heroku";
 import { getNixpacksCommand } from "./nixpacks";
@@ -76,7 +81,11 @@ export const getBuildCommand = async (
 		application.buildRegistry ||
 		application.rollbackRegistry
 	) {
-		command += await uploadImageRemoteCommand(application, deploymentId);
+		command += await uploadImageRemoteCommand(
+			application,
+			deploymentId,
+			rawApplication,
+		);
 	}
 
 	return command;
@@ -157,7 +166,7 @@ export const mechanizeDockerContainer = async (
 					}),
 				...(Ulimits && { Ulimits }),
 				Labels: deploymentId
-					? { ...Labels, "dokploy.deployment.id": deploymentId }
+					? { ...Labels, [DEPLOYMENT_ID_LABEL]: deploymentId }
 					: Labels,
 			},
 			Networks: resolvedNetworks,
@@ -182,26 +191,7 @@ export const mechanizeDockerContainer = async (
 		UpdateConfig,
 	};
 
-	try {
-		const service = docker.getService(appName);
-		const inspect = await service.inspect();
-
-		await service.update({
-			version: Number.parseInt(inspect.Version.Index),
-			...settings,
-			TaskTemplate: {
-				...settings.TaskTemplate,
-				ForceUpdate: inspect.Spec.TaskTemplate.ForceUpdate + 1,
-			},
-		});
-	} catch (error) {
-		console.log(error);
-		if (authConfig) {
-			await docker.createService(authConfig, settings);
-		} else {
-			await docker.createService(settings);
-		}
-	}
+	await updateSwarmService(docker, appName, settings);
 };
 
 const getImageName = async (application: ApplicationNested) => {
@@ -222,39 +212,4 @@ const getImageName = async (application: ApplicationNested) => {
 	}
 
 	return imageName;
-};
-
-export const getAuthConfig = async (application: ApplicationNested) => {
-	const {
-		registry,
-		buildRegistry,
-		username,
-		password,
-		sourceType,
-		registryUrl,
-	} = application;
-
-	if (sourceType === "docker") {
-		if (username && password) {
-			return { password, username, serveraddress: registryUrl || "" };
-		}
-	}
-	if (registry) {
-		const r = await findRegistryByIdWithCredentials(registry.registryId);
-		return {
-			password: r.password,
-			username: r.username,
-			serveraddress: r.registryUrl,
-		};
-	}
-	if (buildRegistry) {
-		const r = await findRegistryByIdWithCredentials(buildRegistry.registryId);
-		return {
-			password: r.password,
-			username: r.username,
-			serveraddress: r.registryUrl,
-		};
-	}
-
-	return undefined;
 };

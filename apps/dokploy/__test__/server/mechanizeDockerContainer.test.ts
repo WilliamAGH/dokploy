@@ -3,7 +3,7 @@ import { mechanizeDockerContainer } from "@dokploy/server/utils/builders";
 import { sourceRevisionLabelPlaceholder } from "@dokploy/server/utils/providers/git";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-type MockCreateServiceOptions = {
+type MockSwarmServiceSettings = {
 	TaskTemplate?: {
 		ContainerSpec?: {
 			Image?: string;
@@ -15,27 +15,10 @@ type MockCreateServiceOptions = {
 	[key: string]: unknown;
 };
 
-const {
-	inspectMock,
-	getServiceMock,
-	createServiceMock,
-	getRemoteDockerMock,
-	findRegistryMock,
-} = vi.hoisted(() => {
-	const inspect = vi.fn<() => Promise<never>>();
-	const getService = vi.fn(() => ({ inspect }));
-	const createService = vi.fn<
-		(opts: MockCreateServiceOptions) => Promise<void>
-	>(async () => undefined);
-	const getRemoteDocker = vi.fn(async () => ({
-		getService,
-		createService,
-	}));
+const { getRemoteDockerMock, findRegistryMock } = vi.hoisted(() => {
+	const getRemoteDocker = vi.fn(async () => ({}));
 	const findRegistry = vi.fn();
 	return {
-		inspectMock: inspect,
-		getServiceMock: getService,
-		createServiceMock: createService,
 		getRemoteDockerMock: getRemoteDocker,
 		findRegistryMock: findRegistry,
 	};
@@ -44,12 +27,34 @@ const {
 vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 	getRemoteDocker: getRemoteDockerMock,
 }));
+
+const { updateSwarmServiceMock } = vi.hoisted(() => ({
+	updateSwarmServiceMock: vi.fn<
+		(
+			docker: unknown,
+			serviceName: string,
+			settings: MockSwarmServiceSettings,
+		) => Promise<void>
+	>(async () => undefined),
+}));
+
+vi.mock("@dokploy/server/utils/docker/swarm-update", () => ({
+	DEPLOYMENT_ID_LABEL: "dokploy.deployment.id",
+	updateSwarmService: updateSwarmServiceMock,
+}));
+
 vi.mock("@dokploy/server/services/registry", async (importOriginal) => ({
 	...(await importOriginal<
 		typeof import("@dokploy/server/services/registry")
 	>()),
 	findRegistryByIdWithCredentials: findRegistryMock,
 }));
+
+const settingsAt = (callIndex = 0): MockSwarmServiceSettings => {
+	const settings = updateSwarmServiceMock.mock.calls[callIndex]?.[2];
+	if (!settings) throw new Error("updateSwarmService should receive settings");
+	return settings;
+};
 
 const createApplication = (
 	overrides: Partial<ApplicationNested> = {},
@@ -81,16 +86,11 @@ const createApplication = (
 
 describe("mechanizeDockerContainer", () => {
 	beforeEach(() => {
-		inspectMock.mockReset();
-		inspectMock.mockRejectedValue(new Error("service not found"));
-		getServiceMock.mockClear();
-		createServiceMock.mockClear();
 		getRemoteDockerMock.mockClear();
 		findRegistryMock.mockReset();
-		getRemoteDockerMock.mockResolvedValue({
-			getService: getServiceMock,
-			createService: createServiceMock,
-		});
+		updateSwarmServiceMock.mockReset();
+		updateSwarmServiceMock.mockResolvedValue(undefined);
+		getRemoteDockerMock.mockResolvedValue({});
 	});
 
 	it("keeps an exact Docker digest and sends selected registry auth", async () => {
@@ -108,17 +108,13 @@ describe("mechanizeDockerContainer", () => {
 			}),
 		);
 
-		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0] as unknown as [
-			Record<string, string>,
-			MockCreateServiceOptions,
-		];
-		expect(call[0]).toEqual({
+		const settings = settingsAt();
+		expect(settings.authconfig).toEqual({
 			username: "registry-user",
 			password: "registry-password",
 			serveraddress: "registry.example.com",
 		});
-		expect(call[1].TaskTemplate?.ContainerSpec?.Image).toBe(digest);
+		expect(settings.TaskTemplate?.ContainerSpec?.Image).toBe(digest);
 	});
 
 	it("passes stopGracePeriodSwarm as a number and keeps zero values", async () => {
@@ -126,14 +122,7 @@ describe("mechanizeDockerContainer", () => {
 
 		await mechanizeDockerContainer(application);
 
-		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0] as
-			| [MockCreateServiceOptions]
-			| undefined;
-		if (!call) {
-			throw new Error("createServiceMock should have been called once");
-		}
-		const [settings] = call;
+		const settings = settingsAt();
 		expect(settings.TaskTemplate?.ContainerSpec?.StopGracePeriod).toBe(0);
 		expect(typeof settings.TaskTemplate?.ContainerSpec?.StopGracePeriod).toBe(
 			"number",
@@ -145,14 +134,7 @@ describe("mechanizeDockerContainer", () => {
 
 		await mechanizeDockerContainer(application);
 
-		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0] as
-			| [MockCreateServiceOptions]
-			| undefined;
-		if (!call) {
-			throw new Error("createServiceMock should have been called once");
-		}
-		const [settings] = call;
+		const settings = settingsAt();
 		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty(
 			"StopGracePeriod",
 		);
@@ -167,12 +149,7 @@ describe("mechanizeDockerContainer", () => {
 
 		await mechanizeDockerContainer(application);
 
-		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0];
-		if (!call) {
-			throw new Error("createServiceMock should have been called once");
-		}
-		const [settings] = call;
+		const settings = settingsAt();
 		expect(settings.TaskTemplate?.ContainerSpec?.Ulimits).toEqual(ulimits);
 	});
 
@@ -181,12 +158,7 @@ describe("mechanizeDockerContainer", () => {
 
 		await mechanizeDockerContainer(application);
 
-		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0];
-		if (!call) {
-			throw new Error("createServiceMock should have been called once");
-		}
-		const [settings] = call;
+		const settings = settingsAt();
 		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty("Ulimits");
 	});
 
@@ -195,13 +167,24 @@ describe("mechanizeDockerContainer", () => {
 
 		await mechanizeDockerContainer(application);
 
-		expect(createServiceMock).toHaveBeenCalledTimes(1);
-		const call = createServiceMock.mock.calls[0];
-		if (!call) {
-			throw new Error("createServiceMock should have been called once");
-		}
-		const [settings] = call;
+		const settings = settingsAt();
 		expect(settings.TaskTemplate?.ContainerSpec).not.toHaveProperty("Ulimits");
+	});
+
+	it("passes job mode to the Swarm convergence owner", async () => {
+		await mechanizeDockerContainer(
+			createApplication({
+				modeSwarm: { ReplicatedJob: { TotalCompletions: 1 } },
+			}),
+		);
+
+		expect(updateSwarmServiceMock).toHaveBeenCalledWith(
+			expect.anything(),
+			"test-app",
+			expect.objectContaining({
+				Mode: { ReplicatedJob: { TotalCompletions: 1 } },
+			}),
+		);
 	});
 
 	it("renders the source revision label for each deployment without changing stored labels", async () => {
@@ -217,15 +200,15 @@ describe("mechanizeDockerContainer", () => {
 		await mechanizeDockerContainer(application, firstRevision, "deployment-id");
 		await mechanizeDockerContainer(application, secondRevision);
 
-		const firstSettings = createServiceMock.mock.calls[0]?.[0];
-		const secondSettings = createServiceMock.mock.calls[1]?.[0];
-		expect(firstSettings?.TaskTemplate?.ContainerSpec?.Labels).toEqual({
+		const firstSettings = settingsAt();
+		const secondSettings = settingsAt(1);
+		expect(firstSettings.TaskTemplate?.ContainerSpec?.Labels).toEqual({
 			"dokploy.deployment.id": "deployment-id",
 			"org.opencontainers.image.revision": firstRevision,
 			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
 			"test.static": "unchanged",
 		});
-		expect(secondSettings?.TaskTemplate?.ContainerSpec?.Labels).toEqual({
+		expect(secondSettings.TaskTemplate?.ContainerSpec?.Labels).toEqual({
 			"org.opencontainers.image.revision": secondRevision,
 			"test.partial": `prefix-${sourceRevisionLabelPlaceholder}`,
 			"test.static": "unchanged",
@@ -237,7 +220,7 @@ describe("mechanizeDockerContainer", () => {
 		});
 	});
 
-	it("rejects unresolved or malformed source revision labels before creating a service", async () => {
+	it("rejects unresolved or malformed source revision labels before Swarm submission", async () => {
 		const application = createApplication({
 			labelsSwarm: {
 				"org.opencontainers.image.revision": sourceRevisionLabelPlaceholder,
@@ -250,7 +233,6 @@ describe("mechanizeDockerContainer", () => {
 		await expect(
 			mechanizeDockerContainer(application, "not-a-source-revision"),
 		).rejects.toThrow("Source revision must be a lowercase 40-hex SHA");
-		expect(createServiceMock).not.toHaveBeenCalled();
-		expect(getServiceMock).not.toHaveBeenCalled();
+		expect(updateSwarmServiceMock).not.toHaveBeenCalled();
 	});
 });

@@ -138,6 +138,11 @@ export type DeploymentJobRow = {
 	state: string;
 };
 
+const deploymentRequestEvents = new Set([
+	"deployment/requested",
+	"rollback/requested",
+]);
+
 /** Build queue rows from events + their runs (one row per run, or pending if no run yet) */
 function buildDeploymentRowsFromRuns(
 	events: InngestEventRow[],
@@ -146,7 +151,7 @@ function buildDeploymentRowsFromRuns(
 ): DeploymentJobRow[] {
 	const requested = events.filter(
 		(e) =>
-			e.name === "deployment/requested" &&
+			deploymentRequestEvents.has(e.name) &&
 			(e.data as Record<string, unknown>)?.serverId === serverId,
 	);
 	const rows: DeploymentJobRow[] = [];
@@ -221,7 +226,7 @@ export const fetchDeploymentJobs = async (
 
 	const requestedForServer = events.filter(
 		(e) =>
-			e.name === "deployment/requested" &&
+			deploymentRequestEvents.has(e.name) &&
 			(e.data as Record<string, unknown>)?.serverId === serverId,
 	);
 	// Limit to avoid too many run fetches

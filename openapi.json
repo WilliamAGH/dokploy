@@ -56503,7 +56503,8 @@
                 "type": "object",
                 "properties": {
                   "name": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1
                   },
                   "logo": {
                     "type": "string"
@@ -56759,7 +56760,8 @@
                     "type": "string"
                   },
                   "name": {
-                    "type": "string"
+                    "type": "string",
+                    "minLength": 1
                   },
                   "logo": {
                     "type": "string"
@@ -62546,7 +62548,14 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "properties": {},
+                  "properties": {
+                    "deploymentId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "deploymentId"
+                  ],
                   "additionalProperties": false
                 }
               }

@@ -21,6 +21,30 @@ export const inngest = new Inngest({
 	name: "Dokploy Deployment Service",
 });
 
+const runDeployment = async (jobData: DeployJob) => {
+	logger.info("Deploying started");
+	try {
+		const result = await deploy(jobData);
+		logger.info("Deployment finished", result);
+		await inngest.send({
+			name: "deployment/completed",
+			data: { ...jobData, result, status: "success" },
+		});
+		return result;
+	} catch (error) {
+		logger.error("Deployment failed", { jobData, error });
+		await inngest.send({
+			name: "deployment/failed",
+			data: {
+				...jobData,
+				error: error instanceof Error ? error.message : String(error),
+				status: "failed",
+			},
+		});
+		throw error;
+	}
+};
+
 export const deploymentFunction = inngest.createFunction(
 	{
 		id: "deploy-application",
@@ -29,6 +53,7 @@ export const deploymentFunction = inngest.createFunction(
 			{
 				key: "event.data.serverId",
 				limit: 1,
+				scope: "env",
 			},
 		],
 		retries: 0,
@@ -44,42 +69,20 @@ export const deploymentFunction = inngest.createFunction(
 
 	async ({ event, step }) => {
 		const jobData = event.data as DeployJob;
-
-		return await step.run("execute-deployment", async () => {
-			logger.info("Deploying started");
-
-			try {
-				const result = await deploy(jobData);
-				logger.info("Deployment finished", result);
-
-				// Send success event
-				await inngest.send({
-					name: "deployment/completed",
-					data: {
-						...jobData,
-						result,
-						status: "success",
-					},
-				});
-
-				return result;
-			} catch (error) {
-				logger.error("Deployment failed", { jobData, error });
-
-				// Send failure event
-				await inngest.send({
-					name: "deployment/failed",
-					data: {
-						...jobData,
-						error: error instanceof Error ? error.message : String(error),
-						status: "failed",
-					},
-				});
-
-				throw error;
-			}
-		});
+		return await step.run("execute-deployment", () => runDeployment(jobData));
 	},
+);
+
+export const rollbackDeploymentFunction = inngest.createFunction(
+	{
+		id: "rollback-application",
+		name: "Rollback Application",
+		concurrency: [{ key: "event.data.serverId", limit: 1, scope: "env" }],
+		retries: 3,
+	},
+	{ event: "rollback/requested" },
+	async ({ event, step }) =>
+		step.run("execute-rollback", () => runDeployment(event.data as DeployJob)),
 );
 
 app.use(async (c, next) => {
@@ -103,7 +106,10 @@ app.post("/deploy", zValidator("json", deployJobSchema), async (c) => {
 	try {
 		// Send event to Inngest instead of adding to Redis queue
 		await inngest.send({
-			name: "deployment/requested",
+			name:
+				data.applicationType === "application" && data.type === "rollback"
+					? "rollback/requested"
+					: "deployment/requested",
 			data,
 		});
 
@@ -205,10 +211,10 @@ app.on(
 	"/api/inngest",
 	serveInngest({
 		client: inngest,
-		functions: [deploymentFunction],
+		functions: [deploymentFunction, rollbackDeploymentFunction],
 	}),
 );
 
-const port = Number.parseInt(process.env.PORT || "3000");
+const port = Number.parseInt(process.env.PORT || "3000", 10);
 logger.info("Starting Deployments Server with Inngest ✅", port);
 serve({ fetch: app.fetch, port });

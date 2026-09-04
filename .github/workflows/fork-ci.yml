@@ -43,6 +43,12 @@ jobs:
           pnpm exec biome format . --write --no-errors-on-unmatched --files-ignore-unknown=true --reporter=summary
           git diff --exit-code
 
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Run unit tests
+        run: pnpm --filter=dokploy exec vitest run --config __test__/vitest.config.ts --exclude __test__/deploy/application.real.test.ts --exclude __test__/setup/monitoring-setup.real.test.ts
+
       - name: Verify generated OpenAPI
         run: |
           rm openapi.json

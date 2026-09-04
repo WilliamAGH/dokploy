@@ -1,15 +1,26 @@
 import type { Registry } from "@dokploy/server";
 import { getRegistryTag, uploadImageRemoteCommand } from "@dokploy/server";
+import { quote } from "shell-quote";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+	findAllRegistryMock,
 	findRegistryMock,
 	createRollbackMock,
+	confirmRollbackMock,
+	discardRollbackMock,
+	execAsyncMock,
+	execAsyncRemoteMock,
 	serviceInspectMock,
 	getRemoteDockerMock,
 } = vi.hoisted(() => ({
+	findAllRegistryMock: vi.fn(),
 	findRegistryMock: vi.fn(),
 	createRollbackMock: vi.fn(),
+	confirmRollbackMock: vi.fn(),
+	discardRollbackMock: vi.fn(),
+	execAsyncMock: vi.fn(),
+	execAsyncRemoteMock: vi.fn(),
 	serviceInspectMock: vi.fn(),
 	getRemoteDockerMock: vi.fn(),
 }));
@@ -18,24 +29,45 @@ vi.mock("@dokploy/server/services/registry", async (importOriginal) => ({
 	...(await importOriginal<
 		typeof import("@dokploy/server/services/registry")
 	>()),
+	findAllRegistryByOrganizationId: findAllRegistryMock,
 	findRegistryByIdWithCredentials: findRegistryMock,
 }));
 vi.mock("@dokploy/server/services/rollbacks", () => ({
+	confirmRollback: confirmRollbackMock,
 	createRollback: createRollbackMock,
+	discardRollback: discardRollbackMock,
+}));
+vi.mock("@dokploy/server/utils/process/execAsync", () => ({
+	execAsync: execAsyncMock,
+	execAsyncRemote: execAsyncRemoteMock,
 }));
 vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 	getRemoteDocker: getRemoteDockerMock,
 }));
 
 beforeEach(() => {
+	findAllRegistryMock.mockReset();
+	findAllRegistryMock.mockResolvedValue([]);
 	findRegistryMock.mockReset();
 	createRollbackMock.mockReset();
+	confirmRollbackMock.mockReset();
+	confirmRollbackMock.mockResolvedValue(undefined);
+	discardRollbackMock.mockReset();
+	execAsyncMock.mockReset();
+	execAsyncMock.mockResolvedValue({ stdout: "", stderr: "" });
+	execAsyncRemoteMock.mockReset();
+	execAsyncRemoteMock.mockResolvedValue({ stdout: "", stderr: "" });
 	serviceInspectMock.mockReset();
 	getRemoteDockerMock.mockReset();
 	getRemoteDockerMock.mockResolvedValue({
 		getService: vi.fn(() => ({ inspect: serviceInspectMock })),
 	});
 });
+
+const getArchiveCommand = () =>
+	execAsyncRemoteMock.mock.calls.at(-1)?.[1] ??
+	execAsyncMock.mock.calls.at(-1)?.[0] ??
+	"";
 
 describe("getRegistryTag", () => {
 	// Helper to create a mock registry
@@ -289,17 +321,32 @@ it("uses immutable Docker source images without retagging them", async () => {
 });
 
 it("publishes the live immutable Docker image as the rollback alias", async () => {
-	createRollbackMock.mockResolvedValue({ image: "app:v1" });
-	findRegistryMock.mockResolvedValue({
+	createRollbackMock.mockResolvedValue({
+		image: "app:v1",
+		rollbackId: "rollback-id",
+	});
+	findRegistryMock.mockResolvedValueOnce({
 		registryId: "rollback-registry",
-		registryUrl: "registry.example.com",
+		registryUrl: "rollback.example.com",
 		registryType: "cloud",
 		imagePrefix: "team",
 		username: "user",
 		password: "password",
 	});
-	const candidateImage = `registry.example.com/app@sha256:${"a".repeat(64)}`;
-	const baselineImage = `registry.example.com/app@sha256:${"b".repeat(64)}`;
+	findRegistryMock.mockResolvedValueOnce({
+		registryId: "source-registry",
+		registryUrl: "source.example.com",
+		registryType: "cloud",
+		imagePrefix: "source-team",
+		username: "source-user",
+		password: "source-password",
+	});
+	const candidateImage = `source.example.com/app@sha256:${"a".repeat(64)}`;
+	const baselineImage = `source.example.com/app@sha256:${"b".repeat(64)}`;
+	const rollbackContext = {
+		dockerImage: candidateImage,
+		env: "TOKEN=${{vault.provider.TOKEN}}",
+	} as never;
 	serviceInspectMock.mockResolvedValue({
 		Spec: {
 			TaskTemplate: {
@@ -310,7 +357,7 @@ it("publishes the live immutable Docker image as the rollback alias", async () =
 			},
 		},
 	});
-	const command = await uploadImageRemoteCommand(
+	await uploadImageRemoteCommand(
 		{
 			applicationId: "application-id",
 			appName: "app",
@@ -322,20 +369,344 @@ it("publishes the live immutable Docker image as the rollback alias", async () =
 			serverId: "server-id",
 		} as never,
 		"deployment-id",
+		rollbackContext,
 	);
+	const command = getArchiveCommand();
 
-	expect(createRollbackMock).toHaveBeenCalledWith({
-		appName: "app",
-		deploymentId: "deployment-id",
-		rollbackSource: {
-			image: baselineImage,
-			labels: { "otel.service.version": "baseline" },
-		},
-	});
+	expect(createRollbackMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			appName: "app",
+			deploymentId: "deployment-id",
+			fullContext: rollbackContext,
+			rollbackSource: {
+				authConfig: {
+					password: "source-password",
+					serveraddress: "source.example.com",
+					username: "source-user",
+				},
+				image: baselineImage,
+				labels: { "otel.service.version": "baseline" },
+			},
+		}),
+	);
 	expect(command).toContain("Enabled Rollback Registry");
-	expect(command).toContain("docker image inspect");
+	const pull = `docker pull ${quote([baselineImage])}`;
+	const pullIndex = command.indexOf(pull);
+	expect(pullIndex).toBeGreaterThan(-1);
+	expect(command.indexOf("source.example.com")).toBeLessThan(pullIndex);
+	expect(command.lastIndexOf("rollback.example.com")).toBeGreaterThan(
+		pullIndex,
+	);
+	expect(command).toContain("docker buildx imagetools create");
 	expect(command).toContain("b".repeat(64));
 	expect(command).not.toContain("a".repeat(64));
+	expect(confirmRollbackMock).toHaveBeenCalledWith(
+		"rollback-id",
+		"deployment-id",
+	);
+});
+
+it("archives the live predecessor instead of a mutable Docker candidate tag", async () => {
+	createRollbackMock.mockResolvedValue({
+		image: "app:v1",
+		rollbackId: "rollback-id",
+	});
+	findRegistryMock.mockResolvedValue({
+		registryId: "rollback-registry",
+		registryUrl: "registry.example.com",
+		registryType: "cloud",
+		imagePrefix: "team",
+		username: "user",
+		password: "password",
+	});
+	const baselineImage = `registry.example.com/app@sha256:${"b".repeat(64)}`;
+	serviceInspectMock.mockResolvedValue({
+		Spec: { TaskTemplate: { ContainerSpec: { Image: baselineImage } } },
+	});
+
+	await uploadImageRemoteCommand(
+		{
+			appName: "app",
+			dockerImage: "registry.example.com/app:next",
+			environment: { project: { organizationId: "organization-id" } },
+			registry: { registryId: "candidate-registry" },
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			sourceType: "docker",
+		} as never,
+		"deployment-id",
+	);
+
+	const command = getArchiveCommand();
+	expect(command).toContain(quote([baselineImage]));
+	expect(command).not.toContain("app:next");
+	expect(createRollbackMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			rollbackSource: expect.objectContaining({ image: baselineImage }),
+		}),
+	);
+});
+
+it("uses rollback-storage credentials when the predecessor came from it", async () => {
+	createRollbackMock.mockResolvedValue({
+		image: "app:v1",
+		rollbackId: "rollback-id",
+	});
+	findRegistryMock
+		.mockResolvedValueOnce({
+			registryId: "rollback-registry",
+			registryUrl: "rollback.example.com",
+			registryType: "cloud",
+			imagePrefix: "team",
+			username: "rollback-user",
+			password: "rollback-password",
+		})
+		.mockResolvedValueOnce({
+			registryId: "candidate-registry",
+			registryUrl: "registry.example.com",
+			registryType: "cloud",
+			imagePrefix: "new-team",
+			username: "candidate-user",
+			password: "candidate-password",
+		});
+	const baselineImage = `rollback.example.com/app@sha256:${"b".repeat(64)}`;
+	serviceInspectMock.mockResolvedValue({
+		Spec: { TaskTemplate: { ContainerSpec: { Image: baselineImage } } },
+	});
+
+	await uploadImageRemoteCommand(
+		{
+			appName: "app",
+			dockerImage: `candidate.example.com/app@sha256:${"a".repeat(64)}`,
+			registry: { registryId: "candidate-registry" },
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			serverId: "server-id",
+			sourceType: "docker",
+		} as never,
+		"deployment-id",
+	);
+	const command = getArchiveCommand();
+
+	const pullIndex = command.indexOf(`docker pull ${quote([baselineImage])}`);
+	expect(command.indexOf("rollback.example.com")).toBeLessThan(pullIndex);
+	expect(command).not.toContain("candidate.example.com");
+	expect(createRollbackMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			rollbackSource: expect.objectContaining({
+				authConfig: expect.objectContaining({
+					serveraddress: "rollback.example.com",
+				}),
+			}),
+		}),
+	);
+});
+
+it("rejects distinct accounts on one source and destination registry host", async () => {
+	findRegistryMock
+		.mockResolvedValueOnce({
+			registryId: "rollback-registry",
+			registryUrl: "registry.example.com",
+			registryType: "cloud",
+			imagePrefix: "rollback-team",
+			username: "rollback-user",
+			password: "rollback-password",
+		})
+		.mockResolvedValueOnce({
+			registryId: "source-registry",
+			registryUrl: "registry.example.com",
+			registryType: "cloud",
+			imagePrefix: "source-team",
+			username: "source-user",
+			password: "source-password",
+		});
+	serviceInspectMock.mockResolvedValue({
+		Spec: {
+			TaskTemplate: {
+				ContainerSpec: {
+					Image: `registry.example.com/source-team/app@sha256:${"b".repeat(64)}`,
+				},
+			},
+		},
+	});
+
+	await expect(
+		uploadImageRemoteCommand(
+			{
+				appName: "app",
+				dockerImage: `registry.example.com/source-team/app@sha256:${"a".repeat(64)}`,
+				registry: { registryId: "source-registry" },
+				rollbackActive: true,
+				rollbackRegistry: { registryId: "rollback-registry" },
+				sourceType: "docker",
+			} as never,
+			"deployment-id",
+		),
+	).rejects.toThrow(
+		"Source and rollback repositories on one registry host require the same credentials",
+	);
+	expect(createRollbackMock).not.toHaveBeenCalled();
+});
+
+it("recognizes Docker Hub shorthand when selecting source credentials", async () => {
+	createRollbackMock.mockResolvedValue({
+		image: "app:v1",
+		rollbackId: "rollback-id",
+	});
+	findRegistryMock
+		.mockResolvedValueOnce({
+			registryId: "rollback-registry",
+			registryUrl: "index.docker.io",
+			registryType: "cloud",
+			imagePrefix: "team",
+			username: "rollback-user",
+			password: "rollback-password",
+		})
+		.mockResolvedValueOnce({
+			registryId: "candidate-registry",
+			registryUrl: "candidate.example.com",
+			registryType: "cloud",
+			imagePrefix: "team",
+			username: "candidate-user",
+			password: "candidate-password",
+		});
+	const baselineImage = `team/private@sha256:${"b".repeat(64)}`;
+	serviceInspectMock.mockResolvedValue({
+		Spec: { TaskTemplate: { ContainerSpec: { Image: baselineImage } } },
+	});
+
+	await uploadImageRemoteCommand(
+		{
+			appName: "app",
+			dockerImage: `candidate.example.com/app@sha256:${"a".repeat(64)}`,
+			registry: { registryId: "candidate-registry" },
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			sourceType: "docker",
+		} as never,
+		"deployment-id",
+	);
+	const command = getArchiveCommand();
+
+	const pullIndex = command.indexOf(`docker pull ${quote([baselineImage])}`);
+	expect(command.indexOf("index.docker.io")).toBeLessThan(pullIndex);
+	expect(createRollbackMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			rollbackSource: expect.objectContaining({
+				authConfig: expect.objectContaining({
+					serveraddress: "index.docker.io",
+				}),
+			}),
+		}),
+	);
+});
+
+it("finds predecessor credentials in the organization registry inventory", async () => {
+	createRollbackMock.mockResolvedValue({
+		image: "app:v1",
+		rollbackId: "rollback-id",
+	});
+	findRegistryMock
+		.mockResolvedValueOnce({
+			registryId: "rollback-registry",
+			registryUrl: "rollback.example.com",
+			registryType: "cloud",
+			imagePrefix: "team",
+			username: "rollback-user",
+			password: "rollback-password",
+		})
+		.mockResolvedValueOnce({
+			registryId: "candidate-registry",
+			registryUrl: "candidate.example.com",
+			registryType: "cloud",
+			imagePrefix: "team",
+			username: "candidate-user",
+			password: "candidate-password",
+		});
+	findAllRegistryMock.mockResolvedValue([
+		{
+			imagePrefix: "old-team",
+			registryUrl: "registry.example.com",
+			username: "baseline-user",
+			password: "baseline-password",
+		},
+	]);
+	const baselineImage = `registry.example.com/old-team/app@sha256:${"b".repeat(64)}`;
+	serviceInspectMock.mockResolvedValue({
+		Spec: { TaskTemplate: { ContainerSpec: { Image: baselineImage } } },
+	});
+
+	await uploadImageRemoteCommand(
+		{
+			appName: "app",
+			dockerImage: `registry.example.com/new-team/app@sha256:${"a".repeat(64)}`,
+			environment: { project: { organizationId: "organization-id" } },
+			registry: { registryId: "candidate-registry" },
+			rollbackActive: true,
+			rollbackRegistry: { registryId: "rollback-registry" },
+			sourceType: "docker",
+		} as never,
+		"deployment-id",
+	);
+	const command = getArchiveCommand();
+
+	expect(findAllRegistryMock).toHaveBeenCalledWith("organization-id");
+	expect(command.indexOf("registry.example.com")).toBeLessThan(
+		command.indexOf(`docker pull ${quote([baselineImage])}`),
+	);
+	expect(createRollbackMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			rollbackSource: expect.objectContaining({
+				authConfig: expect.objectContaining({
+					serveraddress: "registry.example.com",
+				}),
+			}),
+		}),
+	);
+});
+
+it("discards a rollback record when archival publication fails", async () => {
+	createRollbackMock.mockResolvedValue({
+		image: "app:v1",
+		rollbackId: "rollback-id",
+	});
+	findRegistryMock.mockResolvedValue({
+		registryId: "rollback-registry",
+		registryUrl: "rollback.example.com",
+		registryType: "cloud",
+		imagePrefix: "team",
+		username: "rollback-user",
+		password: "rollback-password",
+	});
+	serviceInspectMock.mockResolvedValue({
+		Spec: {
+			TaskTemplate: {
+				ContainerSpec: {
+					Image: `rollback.example.com/app@sha256:${"b".repeat(64)}`,
+				},
+			},
+		},
+	});
+	execAsyncRemoteMock.mockRejectedValue(new Error("archive failed"));
+
+	await expect(
+		uploadImageRemoteCommand(
+			{
+				appName: "app",
+				dockerImage: `candidate.example.com/app@sha256:${"a".repeat(64)}`,
+				registry: { registryId: "candidate-registry" },
+				rollbackActive: true,
+				rollbackRegistry: { registryId: "rollback-registry" },
+				serverId: "server-id",
+				sourceType: "docker",
+			} as never,
+			"deployment-id",
+		),
+	).rejects.toThrow("archive failed");
+	expect(discardRollbackMock).toHaveBeenCalledWith(
+		"rollback-id",
+		"deployment-id",
+	);
 });
 
 it("does not create a rollback record before the first immutable Docker deploy", async () => {

@@ -5,8 +5,11 @@ import {
 	rebuildApplication,
 	rebuildCompose,
 	rebuildPreviewApplication,
+	rollback,
 	updateApplicationStatus,
 	updateCompose,
+	updateDeployment,
+	updateDeploymentStatus,
 	updatePreviewDeployment,
 } from "@dokploy/server";
 import type { DeployJob } from "./schema.js";
@@ -15,7 +18,16 @@ export const deploy = async (job: DeployJob) => {
 	try {
 		if (job.applicationType === "application") {
 			await updateApplicationStatus(job.applicationId, "running");
-			if (job.server) {
+			if (job.type === "rollback") {
+				await updateDeployment(job.deploymentId, {
+					status: "running",
+					finishedAt: null,
+					errorMessage: null,
+				});
+				await rollback(job.rollbackId);
+				await updateDeploymentStatus(job.deploymentId, "done");
+				await updateApplicationStatus(job.applicationId, "done");
+			} else if (job.server) {
 				if (job.type === "redeploy") {
 					await rebuildApplication({
 						applicationId: job.applicationId,
@@ -25,6 +37,9 @@ export const deploy = async (job: DeployJob) => {
 				} else if (job.type === "deploy") {
 					await deployApplication({
 						applicationId: job.applicationId,
+						deploymentId: job.deploymentId,
+						expectedDockerImage: job.expectedDockerImage,
+						expectedLabelsSwarm: job.expectedLabelsSwarm,
 						titleLog: job.titleLog || "Manual deployment",
 						descriptionLog: job.descriptionLog || "",
 						sourceRevision: job.sourceRevision,
@@ -75,6 +90,13 @@ export const deploy = async (job: DeployJob) => {
 		}
 	} catch (e) {
 		if (job.applicationType === "application") {
+			if (job.type === "rollback") {
+				await updateDeployment(job.deploymentId, {
+					status: "error",
+					finishedAt: new Date().toISOString(),
+					errorMessage: e instanceof Error ? e.message : String(e),
+				});
+			}
 			await updateApplicationStatus(job.applicationId, "error");
 		} else if (job.applicationType === "compose") {
 			await updateCompose(job.composeId, {

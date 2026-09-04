@@ -5,9 +5,11 @@ import {
 	rebuildApplication,
 	rebuildCompose,
 	rebuildPreviewApplication,
+	rollback,
 	updateApplicationStatus,
-	updateDeployment,
 	updateCompose,
+	updateDeployment,
+	updateDeploymentStatus,
 	updatePreviewDeployment,
 } from "@dokploy/server";
 import type { InMemoryJob } from "./in-memory-queue";
@@ -37,6 +39,15 @@ export const processDeploymentJob = async (job: InMemoryJob) => {
 					descriptionLog: job.data.descriptionLog,
 					sourceRevision: job.data.sourceRevision,
 				});
+			} else if (job.data.type === "rollback") {
+				await updateDeployment(job.data.deploymentId, {
+					status: "running",
+					finishedAt: null,
+					errorMessage: null,
+				});
+				await rollback(job.data.rollbackId);
+				await updateDeploymentStatus(job.data.deploymentId, "done");
+				await updateApplicationStatus(job.data.applicationId, "done");
 			}
 		} else if (job.data.applicationType === "compose") {
 			await updateCompose(job.data.composeId, {

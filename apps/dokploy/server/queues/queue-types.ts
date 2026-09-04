@@ -1,17 +1,27 @@
-type DeployJob =
+type ApplicationDeploymentJob = {
+	applicationId: string;
+	titleLog: string;
+	descriptionLog: string;
+	server?: boolean;
+	applicationType: "application";
+	serverId?: string;
+} & (
 	| {
-			applicationId: string;
 			deploymentId?: string;
 			expectedDockerImage?: string;
 			expectedLabelsSwarm?: Record<string, string>;
-			titleLog: string;
-			descriptionLog: string;
 			sourceRevision?: string;
-			server?: boolean;
 			type: "deploy" | "redeploy";
-			applicationType: "application";
-			serverId?: string;
 	  }
+	| {
+			deploymentId: string;
+			rollbackId: string;
+			type: "rollback";
+	  }
+);
+
+type DeployJob =
+	| ApplicationDeploymentJob
 	| {
 			composeId: string;
 			titleLog: string;

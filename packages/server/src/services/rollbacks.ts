@@ -1,5 +1,5 @@
 import type { CreateServiceOptions } from "dockerode";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import type { z } from "zod";
 import { db } from "../db";
 import {
@@ -7,7 +7,13 @@ import {
 	deployments as deploymentsSchema,
 	rollbacks,
 } from "../db/schema";
-import { getRegistryTag } from "../utils/cluster/upload";
+import type { ApplicationNested } from "../utils/builders";
+import { getAuthConfig } from "../utils/builders/auth";
+import { getRegistryTag, isImmutableImage } from "../utils/cluster/upload";
+import {
+	DEPLOYMENT_ID_LABEL,
+	updateSwarmService,
+} from "../utils/docker/swarm-update";
 import {
 	calculateResources,
 	generateBindMounts,
@@ -37,9 +43,22 @@ import {
 	safeDockerLoginCommand,
 } from "./registry";
 
+type RollbackApplicationSnapshot = ApplicationNested & {
+	bitbucket?: unknown;
+	github?: unknown;
+	gitlab?: unknown;
+	gitea?: unknown;
+};
+
 export const createRollback = async (
-	input: z.infer<typeof createRollbackSchema> & {
+	input: Omit<z.infer<typeof createRollbackSchema>, "fullContext"> & {
+		fullContext?: ApplicationNested;
 		rollbackSource?: {
+			authConfig?: {
+				password: string;
+				serveraddress: string;
+				username: string;
+			};
 			image: string;
 			labels: Record<string, string>;
 		};
@@ -64,6 +83,8 @@ export const createRollback = async (
 			throw new Error("Deployment not found");
 		}
 
+		const rollbackContext: RollbackApplicationSnapshot =
+			fullContext ?? (await findApplicationById(deployment.applicationId));
 		const {
 			deployments: _,
 			bitbucket,
@@ -71,7 +92,7 @@ export const createRollback = async (
 			gitlab,
 			gitea,
 			...rest
-		} = await findApplicationById(deployment.applicationId);
+		} = rollbackContext;
 
 		const registry = rest.registryId
 			? await findRegistryByIdWithCredentials(rest.registryId)
@@ -82,54 +103,53 @@ export const createRollback = async (
 		const rollbackRegistry = rest.rollbackRegistryId
 			? await findRegistryByIdWithCredentials(rest.rollbackRegistryId)
 			: rest.rollbackRegistry;
-		const rollbackLabels = rollbackSource?.labels ?? rest.labelsSwarm;
-		const requiresSourceRevision = Object.values(rollbackLabels ?? {}).includes(
-			sourceRevisionLabelPlaceholder,
-		);
-		const sourceRevision = requiresSourceRevision
+		const sourceRevisionLabel = Object.entries(rest.labelsSwarm ?? {}).find(
+			([, value]) => value === sourceRevisionLabelPlaceholder,
+		)?.[0];
+		const sourceRevision = sourceRevisionLabel
 			? sourceRevisionSchema.parse(
-					(
-						await getImageConfig(
-							`${input.appName}:latest`,
-							rest.buildServerId || rest.serverId || undefined,
-						)
-					).Config?.Labels?.["org.opencontainers.image.revision"],
+					rollbackSource?.labels[sourceRevisionLabel] ??
+						(
+							await getImageConfig(
+								`${input.appName}:latest`,
+								rest.buildServerId || rest.serverId || undefined,
+							)
+						).Config?.Labels?.["org.opencontainers.image.revision"],
 				)
 			: undefined;
 
 		const fullContextWithCredentials = {
 			...rest,
-			...(rest.sourceType === "docker" &&
-				rollbackSource && {
-					dockerImage: rollbackSource.image,
-					labelsSwarm: rollbackSource.labels,
-				}),
 			registry,
 			buildRegistry,
 			rollbackRegistry,
 			sourceRevision,
+			...(rest.sourceType === "docker" &&
+				rollbackSource && {
+					buildRegistry: null,
+					buildRegistryId: null,
+					dockerImage: rollbackSource.image,
+					labelsSwarm: rollbackSource.labels,
+					password: rollbackSource.authConfig?.password ?? null,
+					registry: null,
+					registryId: null,
+					registryUrl: rollbackSource.authConfig?.serveraddress ?? null,
+					username: rollbackSource.authConfig?.username ?? null,
+				}),
 		};
 
-		await tx
+		const [updatedRollback] = await tx
 			.update(rollbacks)
 			.set({
 				image: tagImage,
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				fullContext: fullContextWithCredentials as any,
 			})
-			.where(eq(rollbacks.rollbackId, rollback.rollbackId));
-
-		// Update the deployment to reference this rollback
-		await tx
-			.update(deploymentsSchema)
-			.set({
-				rollbackId: rollback.rollbackId,
-			})
-			.where(eq(deploymentsSchema.deploymentId, rollback.deploymentId));
-
-		const updatedRollback = await tx.query.rollbacks.findFirst({
-			where: eq(rollbacks.rollbackId, rollback.rollbackId),
-		});
+			.where(eq(rollbacks.rollbackId, rollback.rollbackId))
+			.returning();
+		if (!updatedRollback) {
+			throw new Error("Failed to create rollback");
+		}
 
 		return updatedRollback;
 	});
@@ -139,7 +159,13 @@ export const findRollbackById = async (rollbackId: string) => {
 	const result = await db.query.rollbacks.findFirst({
 		where: eq(rollbacks.rollbackId, rollbackId),
 		with: {
-			deployment: true,
+			deployment: {
+				with: {
+					application: {
+						columns: { applicationId: true, appName: true, serverId: true },
+					},
+				},
+			},
 		},
 	});
 
@@ -148,6 +174,85 @@ export const findRollbackById = async (rollbackId: string) => {
 	}
 
 	return result;
+};
+
+export const createRollbackDeploymentSubmission = async (
+	rollbackId: string,
+	applicationId: string,
+) => {
+	const deploymentId = `rollback-${rollbackId}`;
+	const [deployment] = await db
+		.insert(deploymentsSchema)
+		.values({
+			deploymentId,
+			applicationId,
+			title: "Rollback deployment",
+			description: "",
+			status: "running",
+			logPath: "",
+			startedAt: new Date().toISOString(),
+		})
+		.onConflictDoNothing()
+		.returning();
+
+	let current = deployment ?? (await findDeploymentById(deploymentId));
+	let claimed = false;
+	const reclaimableStatus = ["error", "cancelled"] as const;
+	if (
+		!deployment &&
+		reclaimableStatus.includes(
+			current.status as (typeof reclaimableStatus)[number],
+		)
+	) {
+		const [retry] = await db
+			.update(deploymentsSchema)
+			.set({
+				status: "running",
+				startedAt: new Date().toISOString(),
+				finishedAt: null,
+				errorMessage: null,
+			})
+			.where(
+				and(
+					eq(deploymentsSchema.deploymentId, deploymentId),
+					inArray(deploymentsSchema.status, reclaimableStatus),
+				),
+			)
+			.returning();
+		claimed = Boolean(retry);
+		current = retry ?? (await findDeploymentById(deploymentId));
+	}
+
+	return {
+		deployment: current,
+		shouldDispatch:
+			Boolean(deployment) ||
+			claimed ||
+			(current.status === "running" && !current.logPath),
+	};
+};
+
+export const discardRollback = async (
+	rollbackId: string,
+	deploymentId: string,
+) => {
+	await db.transaction(async (tx) => {
+		await tx
+			.update(deploymentsSchema)
+			.set({ rollbackId: null })
+			.where(eq(deploymentsSchema.deploymentId, deploymentId));
+		await tx.delete(rollbacks).where(eq(rollbacks.rollbackId, rollbackId));
+	});
+};
+
+export const confirmRollback = async (
+	rollbackId: string,
+	deploymentId: string,
+) => {
+	await db
+		.update(deploymentsSchema)
+		.set({ rollbackId })
+		.where(eq(deploymentsSchema.deploymentId, deploymentId));
 };
 
 const deleteRollbackImage = async (image: string, serverId?: string | null) => {
@@ -163,29 +268,19 @@ const deleteRollbackImage = async (image: string, serverId?: string | null) => {
 export const removeRollbackById = async (rollbackId: string) => {
 	const rollback = await findRollbackById(rollbackId);
 
-	if (!rollback) {
-		throw new Error("Rollback not found");
-	}
-
 	if (rollback?.image) {
-		try {
-			const deployment = await findDeploymentById(rollback.deploymentId);
-
-			if (!deployment?.applicationId) {
-				throw new Error("Deployment not found");
+		if (!rollback.fullContext?.rollbackRegistryId) {
+			try {
+				const application = rollback.deployment.application;
+				if (!application) {
+					throw new Error("Deployment not found");
+				}
+				await deleteRollbackImage(rollback.image, application.serverId);
+			} catch (error) {
+				console.error(error);
 			}
-
-			const application = await findApplicationById(deployment.applicationId);
-			await deleteRollbackImage(rollback.image, application.serverId);
-
-			await db
-				.delete(rollbacks)
-				.where(eq(rollbacks.rollbackId, rollbackId))
-				.returning()
-				.then((res) => res[0]);
-		} catch (error) {
-			console.error(error);
 		}
+		await db.delete(rollbacks).where(eq(rollbacks.rollbackId, rollbackId));
 	}
 
 	return rollback;
@@ -193,51 +288,38 @@ export const removeRollbackById = async (rollbackId: string) => {
 
 export const rollback = async (rollbackId: string) => {
 	const result = await findRollbackById(rollbackId);
-
-	const deployment = await findDeploymentById(result.deploymentId);
-
-	if (!deployment?.applicationId) {
+	const application = result.deployment.application;
+	if (!application) {
 		throw new Error("Deployment not found");
 	}
-
-	const application = await findApplicationById(deployment.applicationId);
 
 	if (!result.fullContext) {
 		throw new Error("Rollback context not found");
 	}
+	if (
+		result.fullContext.appName !== application.appName ||
+		(result.fullContext.serverId ?? null) !== (application.serverId ?? null)
+	) {
+		throw new Error("Rollback target has changed since the image was captured");
+	}
 	const immutableDockerBaseline =
 		result.fullContext.sourceType === "docker" &&
-		/@sha256:[a-f0-9]{64}$/.test(result.fullContext.dockerImage || "")
+		isImmutableImage(result.fullContext.dockerImage || "")
 			? result.fullContext.dockerImage
 			: undefined;
 	await rollbackApplication(
-		application.appName,
+		result.fullContext.appName,
 		immutableDockerBaseline || result.image || "",
-		application.serverId,
+		result.rollbackId,
+		result.fullContext.serverId,
 		result.fullContext,
 	);
-};
-
-const dockerLoginForRegistry = async (
-	registry: Registry,
-	serverId?: string | null,
-) => {
-	const loginCommand = safeDockerLoginCommand(
-		registry.registryUrl,
-		registry.username,
-		registry.password,
-	);
-
-	if (serverId) {
-		await execAsyncRemote(serverId, loginCommand);
-	} else {
-		await execAsync(loginCommand);
-	}
 };
 
 const rollbackApplication = async (
 	appName: string,
 	image: string,
+	rollbackId: string,
 	serverId?: string | null,
 	fullContext?: Application & {
 		environment: Environment & {
@@ -256,13 +338,32 @@ const rollbackApplication = async (
 	const resolvedContext = await withResolvedVaultRefs(fullContext);
 
 	const rollbackRegistry = resolvedContext.rollbackRegistry ?? undefined;
+	const usesRollbackAlias = Boolean(
+		rollbackRegistry && !isImmutableImage(image),
+	);
+	const authConfig = usesRollbackAlias
+		? {
+				password: rollbackRegistry!.password,
+				username: rollbackRegistry!.username,
+				serveraddress: rollbackRegistry!.registryUrl,
+			}
+		: await getAuthConfig(resolvedContext as ApplicationNested);
 
-	// Ensure Docker daemon is authenticated with the rollback registry
-	// before updating the swarm service. The authconfig in CreateServiceOptions
-	// alone is not sufficient — Docker Swarm also relies on the daemon's
-	// cached credentials (~/.docker/config.json) to distribute auth to nodes.
-	if (rollbackRegistry) {
-		await dockerLoginForRegistry(rollbackRegistry, serverId);
+	if (authConfig) {
+		const loginCommand = safeDockerLoginCommand(
+			authConfig.serveraddress,
+			authConfig.username,
+			authConfig.password,
+		);
+		try {
+			if (serverId) {
+				await execAsyncRemote(serverId, loginCommand);
+			} else {
+				await execAsync(loginCommand);
+			}
+		} catch {
+			throw new Error("Registry authentication failed");
+		}
 	}
 
 	const docker = await getRemoteDocker(serverId);
@@ -319,17 +420,12 @@ const rollbackApplication = async (
 		resolvedContext.environment.env,
 	);
 
-	const rollbackImage =
-		rollbackRegistry && !/@sha256:[a-f0-9]{64}$/.test(image)
-			? getRegistryTag(rollbackRegistry, image)
-			: image;
+	const rollbackImage = usesRollbackAlias
+		? getRegistryTag(rollbackRegistry!, image)
+		: image;
 
 	const settings: CreateServiceOptions = {
-		authconfig: {
-			password: rollbackRegistry?.password || "",
-			username: rollbackRegistry?.username || "",
-			serveraddress: rollbackRegistry?.registryUrl || "",
-		},
+		authconfig: authConfig,
 		Name: appName,
 		TaskTemplate: {
 			ContainerSpec: {
@@ -342,7 +438,10 @@ const rollbackApplication = async (
 				...(command && { Command: command.split(" ") }),
 				...(args && args.length > 0 && { Args: args }),
 				...(Ulimits && { Ulimits }),
-				Labels,
+				Labels: {
+					...Labels,
+					[DEPLOYMENT_ID_LABEL]: `rollback-${rollbackId}`,
+				},
 			},
 			Networks: resolvedNetworks,
 			RestartPolicy,
@@ -364,20 +463,5 @@ const rollbackApplication = async (
 		UpdateConfig,
 	};
 
-	try {
-		const service = docker.getService(appName);
-		const inspect = await service.inspect();
-
-		await service.update({
-			version: Number.parseInt(inspect.Version.Index),
-			...settings,
-			TaskTemplate: {
-				...settings.TaskTemplate,
-				ForceUpdate: inspect.Spec.TaskTemplate.ForceUpdate + 1,
-			},
-		});
-	} catch (error) {
-		console.error(error);
-		await docker.createService(settings);
-	}
+	await updateSwarmService(docker, appName, settings);
 };
