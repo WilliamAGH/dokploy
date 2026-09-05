@@ -27,15 +27,16 @@ export const rollbacks = pgTable("rollback", {
 		.notNull()
 		.$defaultFn(() => new Date().toISOString()),
 	fullContext: jsonb("fullContext").$type<
-		Application & {
-			environment: Environment & {
-				project: Project;
-			};
-			mounts: Mount[];
-			ports: Port[];
-			registry?: Registry | null;
-			sourceRevision?: string;
-		}
+		| (Application & {
+				environment: Environment & {
+					project: Project;
+				};
+				mounts: Mount[];
+				ports: Port[];
+				registry?: Registry | null;
+				sourceRevision?: string;
+		  })
+		| { encrypted: string }
 	>(),
 });
 

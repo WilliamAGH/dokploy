@@ -146,12 +146,12 @@ export const getLatestTaskFailure = async (
 
 export const getSwarmServiceDesiredTasks = async (
 	docker: Dockerode,
-	serviceId: string,
+	serviceName: string,
 	mode: "service" | "replicated-job" | "global-job",
 ) => {
 	const [service] = (await docker.listServices({
 		abortSignal: getDockerRequestSignal(),
-		filters: JSON.stringify({ id: [serviceId] }),
+		filters: JSON.stringify({ name: [serviceName] }),
 		status: true,
 	})) as SwarmServiceStatus[];
 	const status = service?.ServiceStatus;

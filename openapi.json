@@ -62512,7 +62512,14 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "properties": {},
+                  "properties": {
+                    "rollbackId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "rollbackId"
+                  ],
                   "additionalProperties": false
                 }
               }

@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	findServerById: vi.fn(),
 	permission: vi.fn(),
 	queueAdd: vi.fn(),
+	removeRollbackById: vi.fn(),
 	rollback: vi.fn(),
 	updateApplicationStatus: vi.fn(),
 	updateDeployment: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock("@dokploy/server", async (importOriginal) => ({
 	deployApplication: mocks.deployApplication,
 	findRollbackById: mocks.findRollbackById,
 	findServerById: mocks.findServerById,
+	removeRollbackById: mocks.removeRollbackById,
 	rollback: mocks.rollback,
 	updateApplicationStatus: mocks.updateApplicationStatus,
 	updateDeployment: mocks.updateDeployment,
@@ -117,6 +119,17 @@ describe("rollback submission", () => {
 			expect.objectContaining(rollbackJob()),
 			"rollback-rollback-id",
 		);
+	});
+
+	it("returns only the deleted rollback identifier", async () => {
+		mocks.removeRollbackById.mockResolvedValue({
+			fullContext: { password: "must-not-leak" },
+			rollbackId: "rollback-id",
+		});
+
+		await expect(
+			caller().delete({ rollbackId: "rollback-id" }),
+		).resolves.toEqual({ rollbackId: "rollback-id" });
 	});
 
 	it("returns a completed rollback deployment without enqueuing it again", async () => {

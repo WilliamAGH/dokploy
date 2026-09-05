@@ -7,6 +7,7 @@ import {
 	deployments as deploymentsSchema,
 	rollbacks,
 } from "../db/schema";
+import { decryptValue, encryptValue } from "../lib/encryption";
 import type { ApplicationNested } from "../utils/builders";
 import { getAuthConfig } from "../utils/builders/auth";
 import { getRegistryTag, isImmutableImage } from "../utils/cluster/upload";
@@ -29,25 +30,55 @@ import {
 } from "../utils/providers/git";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
 import { withResolvedVaultRefs } from "../utils/vault";
-import { type Application, findApplicationById } from "./application";
+import { findApplicationById } from "./application";
 import { findDeploymentById } from "./deployment";
 import { getImageConfig } from "./docker-image";
-import type { Environment } from "./environment";
-import type { Mount } from "./mount";
 import { resolveServiceNetworks } from "./network";
-import type { Port } from "./port";
-import type { Project } from "./project";
 import {
 	findRegistryByIdWithCredentials,
 	type Registry,
 	safeDockerLoginCommand,
 } from "./registry";
 
-type RollbackApplicationSnapshot = ApplicationNested & {
+type RawRollbackApplicationSnapshot = ApplicationNested & {
 	bitbucket?: unknown;
 	github?: unknown;
 	gitlab?: unknown;
 	gitea?: unknown;
+};
+
+type RollbackApplicationSnapshot = Omit<
+	RawRollbackApplicationSnapshot,
+	"buildRegistry" | "registry" | "rollbackRegistry"
+> & {
+	buildRegistry?: Registry | null;
+	registry?: Registry | null;
+	rollbackRegistry?: Registry | null;
+	sourceRevision?: string;
+};
+
+type EncryptedRollbackContext = { encrypted: string };
+
+const encryptRollbackContext = (
+	context: RollbackApplicationSnapshot,
+): EncryptedRollbackContext => ({
+	encrypted: encryptValue(JSON.stringify(context)),
+});
+
+const readRollbackContext = (
+	context: unknown,
+): RollbackApplicationSnapshot | null => {
+	if (!context) return null;
+	if (
+		typeof context === "object" &&
+		"encrypted" in context &&
+		typeof context.encrypted === "string"
+	) {
+		return JSON.parse(
+			decryptValue(context.encrypted),
+		) as RollbackApplicationSnapshot;
+	}
+	return context as RollbackApplicationSnapshot;
 };
 
 export const createRollback = async (
@@ -83,7 +114,7 @@ export const createRollback = async (
 			throw new Error("Deployment not found");
 		}
 
-		const rollbackContext: RollbackApplicationSnapshot =
+		const rollbackContext: RawRollbackApplicationSnapshot =
 			fullContext ?? (await findApplicationById(deployment.applicationId));
 		const {
 			deployments: _,
@@ -142,8 +173,9 @@ export const createRollback = async (
 			.update(rollbacks)
 			.set({
 				image: tagImage,
-				// eslint-disable-next-line @typescript-eslint/no-explicit-any
-				fullContext: fullContextWithCredentials as any,
+				fullContext: encryptRollbackContext(
+					fullContextWithCredentials as unknown as RollbackApplicationSnapshot,
+				),
 			})
 			.where(eq(rollbacks.rollbackId, rollback.rollbackId))
 			.returning();
@@ -269,7 +301,8 @@ export const removeRollbackById = async (rollbackId: string) => {
 	const rollback = await findRollbackById(rollbackId);
 
 	if (rollback?.image) {
-		if (!rollback.fullContext?.rollbackRegistryId) {
+		const fullContext = readRollbackContext(rollback.fullContext);
+		if (!fullContext?.rollbackRegistryId) {
 			try {
 				const application = rollback.deployment.application;
 				if (!application) {
@@ -293,26 +326,27 @@ export const rollback = async (rollbackId: string) => {
 		throw new Error("Deployment not found");
 	}
 
-	if (!result.fullContext) {
+	const fullContext = readRollbackContext(result.fullContext);
+	if (!fullContext) {
 		throw new Error("Rollback context not found");
 	}
 	if (
-		result.fullContext.appName !== application.appName ||
-		(result.fullContext.serverId ?? null) !== (application.serverId ?? null)
+		fullContext.appName !== application.appName ||
+		(fullContext.serverId ?? null) !== (application.serverId ?? null)
 	) {
 		throw new Error("Rollback target has changed since the image was captured");
 	}
 	const immutableDockerBaseline =
-		result.fullContext.sourceType === "docker" &&
-		isImmutableImage(result.fullContext.dockerImage || "")
-			? result.fullContext.dockerImage
+		fullContext.sourceType === "docker" &&
+		isImmutableImage(fullContext.dockerImage || "")
+			? fullContext.dockerImage
 			: undefined;
 	await rollbackApplication(
-		result.fullContext.appName,
+		fullContext.appName,
 		immutableDockerBaseline || result.image || "",
 		result.rollbackId,
-		result.fullContext.serverId,
-		result.fullContext,
+		fullContext.serverId,
+		fullContext,
 	);
 };
 
@@ -321,15 +355,7 @@ const rollbackApplication = async (
 	image: string,
 	rollbackId: string,
 	serverId?: string | null,
-	fullContext?: Application & {
-		environment: Environment & {
-			project: Project;
-		};
-		mounts: Mount[];
-		ports: Port[];
-		rollbackRegistry?: Registry | null;
-		sourceRevision?: string;
-	},
+	fullContext?: RollbackApplicationSnapshot,
 ) => {
 	if (!fullContext) {
 		throw new Error("Full context is required for rollback");

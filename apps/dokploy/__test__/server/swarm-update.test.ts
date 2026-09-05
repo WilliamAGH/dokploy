@@ -9,10 +9,13 @@ import { describe, expect, it, vi } from "vitest";
 type DockerClient = Parameters<typeof waitForSwarmServiceUpdate>[0];
 type DockerService = Parameters<typeof waitForSwarmServiceUpdate>[1];
 
-const service = (inspects: Array<Record<string, unknown>>) => {
+const service = (
+	inspects: Array<Record<string, unknown>>,
+	id = "service-id",
+) => {
 	const inspect = vi.fn();
 	for (const value of inspects) inspect.mockResolvedValueOnce(value);
-	return { id: "service-id", inspect, update: vi.fn(async () => undefined) };
+	return { id, inspect, update: vi.fn(async () => undefined) };
 };
 
 const task = (
@@ -526,21 +529,24 @@ describe("updateSwarmService", () => {
 
 	it("uses completed status when ReplicatedJob omits total completions", async () => {
 		const operationId = "job-id";
-		const swarmService = service([
-			{ Spec: { TaskTemplate: { ForceUpdate: 3 } }, Version: { Index: 10 } },
-			{
-				Spec: {
-					TaskTemplate: {
-						ContainerSpec: {
-							Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+		const swarmService = service(
+			[
+				{ Spec: { TaskTemplate: { ForceUpdate: 3 } }, Version: { Index: 10 } },
+				{
+					Spec: {
+						TaskTemplate: {
+							ContainerSpec: {
+								Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+							},
+							ForceUpdate: 4,
 						},
-						ForceUpdate: 4,
 					},
+					UpdateStatus: { State: "completed", StartedAt: "job-1" },
+					Version: { Index: 11 },
 				},
-				UpdateStatus: { State: "completed", StartedAt: "job-1" },
-				Version: { Index: 11 },
-			},
-		]);
+			],
+			"named-job",
+		);
 		const docker = {
 			getService: vi.fn(() => swarmService),
 			listNodes: vi.fn(async () => [
@@ -565,21 +571,24 @@ describe("updateSwarmService", () => {
 
 	it("uses status-enabled service counts for a named Global service", async () => {
 		const operationId = "global-id";
-		const swarmService = service([
-			{ Spec: { TaskTemplate: { ForceUpdate: 3 } }, Version: { Index: 10 } },
-			{
-				Spec: {
-					TaskTemplate: {
-						ContainerSpec: {
-							Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+		const swarmService = service(
+			[
+				{ Spec: { TaskTemplate: { ForceUpdate: 3 } }, Version: { Index: 10 } },
+				{
+					Spec: {
+						TaskTemplate: {
+							ContainerSpec: {
+								Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+							},
+							ForceUpdate: 4,
 						},
-						ForceUpdate: 4,
 					},
+					UpdateStatus: { State: "completed", StartedAt: "global-1" },
+					Version: { Index: 11 },
 				},
-				UpdateStatus: { State: "completed", StartedAt: "global-1" },
-				Version: { Index: 11 },
-			},
-		]);
+			],
+			"named-service",
+		);
 		const currentTasks = ["node-1", "node-2"].map((NodeID) => ({
 			...task("running", 4, operationId),
 			NodeID,
@@ -604,7 +613,7 @@ describe("updateSwarmService", () => {
 		});
 		expect(docker.listServices).toHaveBeenCalledWith(
 			expect.objectContaining({
-				filters: JSON.stringify({ id: ["service-id"] }),
+				filters: JSON.stringify({ name: ["named-service"] }),
 				status: true,
 			}),
 		);
@@ -612,21 +621,24 @@ describe("updateSwarmService", () => {
 
 	it("counts completed tasks for a named GlobalJob service", async () => {
 		const operationId = "global-job-id";
-		const swarmService = service([
-			{ Spec: { TaskTemplate: { ForceUpdate: 3 } }, Version: { Index: 10 } },
-			{
-				Spec: {
-					TaskTemplate: {
-						ContainerSpec: {
-							Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+		const swarmService = service(
+			[
+				{ Spec: { TaskTemplate: { ForceUpdate: 3 } }, Version: { Index: 10 } },
+				{
+					Spec: {
+						TaskTemplate: {
+							ContainerSpec: {
+								Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+							},
+							ForceUpdate: 4,
 						},
-						ForceUpdate: 4,
 					},
+					UpdateStatus: { State: "completed", StartedAt: "job-1" },
+					Version: { Index: 11 },
 				},
-				UpdateStatus: { State: "completed", StartedAt: "job-1" },
-				Version: { Index: 11 },
-			},
-		]);
+			],
+			"named-job",
+		);
 		const currentTasks = ["node-1", "node-2"].map((NodeID) => ({
 			...task("complete", 4, operationId),
 			NodeID,

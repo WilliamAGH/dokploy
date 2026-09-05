@@ -117,7 +117,18 @@ vi.mock("@dokploy/server/utils/vault", () => ({
 
 const { createRollback, createRollbackDeploymentSubmission, rollback } =
 	await import("@dokploy/server/services/rollbacks");
+const { decryptValue, encryptValue } = await import(
+	"@dokploy/server/lib/encryption"
+);
 const { ExecError } = await import("@dokploy/server/utils/process/ExecError");
+
+const persistedContext = () => {
+	const stored = mocks.persistedRollback.mock.calls.at(-1)?.[0].fullContext as {
+		encrypted: string;
+	};
+	expect(stored).toEqual({ encrypted: expect.any(String) });
+	return JSON.parse(decryptValue(stored.encrypted));
+};
 
 describe("rollback context", () => {
 	const candidateImage = `registry.example.com/app@sha256:${"a".repeat(64)}`;
@@ -345,10 +356,8 @@ describe("rollback context", () => {
 			"frontend-stg:latest",
 			"build-server-id",
 		);
-		expect(mocks.persistedRollback).toHaveBeenCalledWith(
-			expect.objectContaining({
-				fullContext: expect.objectContaining({ sourceRevision }),
-			}),
+		expect(persistedContext()).toEqual(
+			expect.objectContaining({ sourceRevision }),
 		);
 	});
 
@@ -377,10 +386,8 @@ describe("rollback context", () => {
 		});
 
 		expect(mocks.getImageConfig).not.toHaveBeenCalled();
-		expect(mocks.persistedRollback).toHaveBeenCalledWith(
-			expect.objectContaining({
-				fullContext: expect.objectContaining({ sourceRevision }),
-			}),
+		expect(persistedContext()).toEqual(
+			expect.objectContaining({ sourceRevision }),
 		);
 	});
 
@@ -418,21 +425,22 @@ describe("rollback context", () => {
 		});
 
 		expect(mocks.getImageConfig).not.toHaveBeenCalled();
-		expect(mocks.persistedRollback).toHaveBeenCalledWith(
+		expect(persistedContext()).toEqual(
 			expect.objectContaining({
-				fullContext: expect.objectContaining({
-					buildRegistry: null,
-					buildRegistryId: null,
-					dockerImage: baselineImage,
-					labelsSwarm: { "otel.service.version": sourceRevision },
-					password: "baseline-password",
-					registry: null,
-					registryId: null,
-					registryUrl: "baseline.example.com",
-					username: "baseline-user",
-				}),
+				buildRegistry: null,
+				buildRegistryId: null,
+				dockerImage: baselineImage,
+				labelsSwarm: { "otel.service.version": sourceRevision },
+				password: "baseline-password",
+				registry: null,
+				registryId: null,
+				registryUrl: "baseline.example.com",
+				username: "baseline-user",
 			}),
 		);
+		expect(
+			JSON.stringify(mocks.persistedRollback.mock.calls.at(-1)?.[0]),
+		).not.toContain("baseline-password");
 	});
 
 	it("stores the same application snapshot used by the candidate deployment", async () => {
@@ -461,12 +469,10 @@ describe("rollback context", () => {
 		});
 
 		expect(mocks.findApplicationById).not.toHaveBeenCalled();
-		expect(mocks.persistedRollback).toHaveBeenCalledWith(
+		expect(persistedContext()).toEqual(
 			expect.objectContaining({
-				fullContext: expect.objectContaining({
-					dockerImage: baselineImage,
-					memoryLimit: "captured-limit",
-				}),
+				dockerImage: baselineImage,
+				memoryLimit: "captured-limit",
 			}),
 		);
 	});
@@ -492,23 +498,26 @@ describe("rollback context", () => {
 			Ulimits: [{ Name: "nofile", Soft: 1024, Hard: 2048 }],
 			UpdateConfig: { Order: "start-first" },
 		});
+		const encryptedContext = {
+			appName: "crawl4ai",
+			args: ["--serve"],
+			command: "python server.py",
+			dockerImage: baselineImage,
+			env: "KEY=value",
+			environment: { env: "", project: { env: "" } },
+			mounts: [],
+			ports: [],
+			rollbackRegistry: { registryUrl: "registry.example.com" },
+			serverId: null,
+			sourceType: "docker",
+		};
 		mocks.findStoredRollback.mockResolvedValue({
 			deployment: {
 				application: { appName: "crawl4ai", serverId: null },
 			},
 			deploymentId: "deployment-id",
 			fullContext: {
-				appName: "crawl4ai",
-				args: ["--serve"],
-				command: "python server.py",
-				dockerImage: baselineImage,
-				env: "KEY=value",
-				environment: { env: "", project: { env: "" } },
-				mounts: [],
-				ports: [],
-				rollbackRegistry: { registryUrl: "registry.example.com" },
-				serverId: null,
-				sourceType: "docker",
+				encrypted: encryptValue(JSON.stringify(encryptedContext)),
 			},
 			image: "crawl4ai:v3",
 			rollbackId: "rollback-id",

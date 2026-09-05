@@ -750,7 +750,7 @@ const getDeploymentsByType = async (
 		where: eq(deployments[`${type}Id`], id),
 		orderBy: desc(deployments.createdAt),
 		with: {
-			rollback: true,
+			rollback: { columns: { fullContext: false } },
 		},
 	});
 	return deploymentList;

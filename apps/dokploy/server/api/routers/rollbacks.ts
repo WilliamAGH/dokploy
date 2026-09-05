@@ -17,6 +17,7 @@ import { createTRPCRouter, protectedProcedure } from "../trpc";
 export const rollbackRouter = createTRPCRouter({
 	delete: protectedProcedure
 		.input(apiFindOneRollback)
+		.output(z.object({ rollbackId: z.string() }))
 		.mutation(async ({ input, ctx }) => {
 			try {
 				const rb = await findRollbackById(input.rollbackId);
@@ -26,13 +27,13 @@ export const rollbackRouter = createTRPCRouter({
 						deployment: ["create"],
 					});
 				}
-				const result = await removeRollbackById(input.rollbackId);
+				await removeRollbackById(input.rollbackId);
 				await audit(ctx, {
 					action: "delete",
 					resourceType: "deployment",
 					resourceId: input.rollbackId,
 				});
-				return result;
+				return { rollbackId: input.rollbackId };
 			} catch (error) {
 				const message =
 					error instanceof Error
