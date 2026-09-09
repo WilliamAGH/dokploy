@@ -113,31 +113,37 @@ describe("InMemoryQueue concurrency", () => {
 		expect(started).toEqual([1, 2]);
 	});
 
-	it("isolates concurrency per server partition", async () => {
-		const started: string[] = [];
-		const tasks = new Map<string, ReturnType<typeof deferred>>();
+	it.each(["a", "b"])(
+		"isolates server partitions when the second application is %s",
+		async (secondApplicationId) => {
+			const started: string[] = [];
+			const block = deferred();
 
-		// server-1 allows 1, server-2 allows 1, but they are independent.
-		const queue = new InMemoryQueue({
-			resolveConcurrency: () => 1,
-			now,
-		});
-		queue.process(async (job) => {
-			const id = `${job.data.serverId}:${(job.data as any).applicationId}`;
-			started.push(id);
-			const d = deferred();
-			tasks.set(id, d);
-			await d.promise;
-		});
-		await queue.run();
+			// server-1 allows 1, server-2 allows 1, but they are independent.
+			const queue = new InMemoryQueue({
+				resolveConcurrency: () => 1,
+				now,
+			});
+			queue.process(async (job) => {
+				const id = `${job.data.serverId}:${(job.data as any).applicationId}`;
+				started.push(id);
+				await block.promise;
+			});
+			await queue.run();
 
-		await queue.add(appJob("a", "server-1"));
-		await queue.add(appJob("b", "server-2"));
-		await flush();
+			await queue.add(appJob("a", "server-1"));
+			await queue.add(appJob(secondApplicationId, "server-2"));
+			await flush();
 
-		// One per partition runs in parallel despite concurrency 1 each.
-		expect(started.sort()).toEqual(["server-1:a", "server-2:b"]);
-	});
+			// One per partition runs in parallel despite concurrency 1 each.
+			expect(started.sort()).toEqual([
+				"server-1:a",
+				`server-2:${secondApplicationId}`,
+			]);
+			await queue.close();
+			block.release();
+		},
+	);
 
 	it("honors a different concurrency per server", async () => {
 		const started: string[] = [];

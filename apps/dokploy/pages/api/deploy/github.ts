@@ -137,10 +137,10 @@ export default async function handler(
 					type: "deploy",
 					applicationType: "application",
 					server: !!app.serverId,
+					serverId: app.serverId || undefined,
 				};
 
 				if (IS_CLOUD && app.serverId) {
-					jobData.serverId = app.serverId;
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -169,10 +169,10 @@ export default async function handler(
 					applicationType: "compose",
 					descriptionLog: `Hash: ${deploymentHash}`,
 					server: !!composeApp.serverId,
+					serverId: composeApp.serverId || undefined,
 				};
 
 				if (IS_CLOUD && composeApp.serverId) {
-					jobData.serverId = composeApp.serverId;
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -237,6 +237,7 @@ export default async function handler(
 					type: "deploy",
 					applicationType: "application",
 					server: !!app.serverId,
+					serverId: app.serverId || undefined,
 				};
 
 				const shouldDeployPaths = shouldDeploy(
@@ -249,7 +250,6 @@ export default async function handler(
 				}
 
 				if (IS_CLOUD && app.serverId) {
-					jobData.serverId = app.serverId;
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -278,6 +278,7 @@ export default async function handler(
 					applicationType: "compose",
 					descriptionLog: `Hash: ${deploymentHash}`,
 					server: !!composeApp.serverId,
+					serverId: composeApp.serverId || undefined,
 				};
 
 				const shouldDeployPaths = shouldDeploy(
@@ -289,7 +290,6 @@ export default async function handler(
 					continue;
 				}
 				if (IS_CLOUD && composeApp.serverId) {
-					jobData.serverId = composeApp.serverId;
 					deploy(jobData).catch((error) => {
 						console.error("Background deployment failed:", error);
 					});
@@ -437,7 +437,7 @@ export default async function handler(
 				await createSecurityBlockedComment({
 					owner,
 					repository,
-					prNumber: Number.parseInt(prNumber),
+					prNumber: Number.parseInt(prNumber, 10),
 					prAuthor,
 					permission: userPermission,
 					githubId: githubResult.githubId,
@@ -492,12 +492,12 @@ export default async function handler(
 					type: "deploy",
 					applicationType: "application-preview",
 					server: !!app.serverId,
+					serverId: app.serverId || undefined,
 					previewDeploymentId,
 				};
 
 				if (previewDeploymentId) {
 					if (IS_CLOUD && app.serverId) {
-						jobData.serverId = app.serverId;
 						deploy(jobData).catch((error) => {
 							console.error("Background deployment failed:", error);
 						});

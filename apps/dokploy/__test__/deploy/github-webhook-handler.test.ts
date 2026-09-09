@@ -4,6 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const sourceRevision = "89abcdef0123456789abcdef0123456789abcdef";
 
 const mocks = vi.hoisted(() => ({
+	cloudMode: false,
+	deploy: vi.fn(),
+	applicationsFindFirst: vi.fn(),
+	composeFindFirst: vi.fn(),
 	eq: vi.fn((field: string, value: unknown) => ({ field, value })),
 	and: vi.fn((...conditions: Array<{ field: string; value: unknown }>) => ({
 		conditions,
@@ -55,9 +59,11 @@ vi.mock("@dokploy/server/db", () => ({
 				findFirst: mocks.githubFindFirst,
 			},
 			applications: {
+				findFirst: mocks.applicationsFindFirst,
 				findMany: mocks.applicationsFindMany,
 			},
 			compose: {
+				findFirst: mocks.composeFindFirst,
 				findMany: mocks.composeFindMany,
 			},
 		},
@@ -65,7 +71,9 @@ vi.mock("@dokploy/server/db", () => ({
 }));
 
 vi.mock("@dokploy/server", () => ({
-	IS_CLOUD: false,
+	get IS_CLOUD() {
+		return mocks.cloudMode;
+	},
 	shouldDeploy: mocks.shouldDeploy,
 	checkUserRepositoryPermissions: vi.fn(),
 	createPreviewDeployment: mocks.createPreviewDeployment,
@@ -93,9 +101,11 @@ vi.mock("@/server/queues/queueSetup", () => ({
 }));
 
 vi.mock("@/server/utils/deploy", () => ({
-	deploy: vi.fn(),
+	deploy: mocks.deploy,
 }));
 
+import applicationHandler from "@/pages/api/deploy/[refreshToken]";
+import composeHandler from "@/pages/api/deploy/compose/[refreshToken]";
 import handler from "@/pages/api/deploy/github";
 
 const getConditionValue = (
@@ -166,6 +176,8 @@ const createTagRequest = (tagName: string) => {
 describe("GitHub app webhook auto-deploy", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.cloudMode = false;
+		mocks.deploy.mockResolvedValue(undefined);
 		mocks.githubFindFirst.mockResolvedValue({
 			githubId: "github-provider-id",
 			githubInstallationId: 12345,
@@ -307,6 +319,62 @@ describe("GitHub app webhook auto-deploy", () => {
 		});
 	});
 
+	describe.each([false, true])("cloud mode %s", (cloudMode) => {
+		it.each(["push", "tag"])(
+			"routes %s application and compose deployments to their server",
+			async (event) => {
+				mocks.cloudMode = cloudMode;
+				mocks.applicationsFindMany.mockResolvedValue([
+					{ applicationId: "remote-app", serverId: "server-1" },
+					{ applicationId: "local-app", serverId: null },
+				]);
+				mocks.composeFindMany.mockResolvedValue([
+					{ composeId: "remote-compose", serverId: "server-2" },
+					{ composeId: "local-compose", serverId: null },
+				]);
+				const res = createResponse();
+
+				await handler(
+					event === "push" ? createPushRequest("main") : createTagRequest("v1"),
+					res,
+				);
+
+				const remoteDispatch = cloudMode ? mocks.deploy : mocks.queueAdd;
+				expect(remoteDispatch).toHaveBeenCalledWith(
+					expect.objectContaining({
+						applicationId: "remote-app",
+						serverId: "server-1",
+						server: true,
+					}),
+				);
+				expect(remoteDispatch).toHaveBeenCalledWith(
+					expect.objectContaining({
+						composeId: "remote-compose",
+						serverId: "server-2",
+						server: true,
+					}),
+				);
+				expect(mocks.queueAdd).toHaveBeenCalledWith(
+					expect.objectContaining({
+						applicationId: "local-app",
+						serverId: undefined,
+						server: false,
+					}),
+				);
+				expect(mocks.queueAdd).toHaveBeenCalledWith(
+					expect.objectContaining({
+						composeId: "local-compose",
+						serverId: undefined,
+						server: false,
+					}),
+				);
+				expect(mocks.queueAdd).toHaveBeenCalledTimes(cloudMode ? 2 : 4);
+				expect(mocks.deploy).toHaveBeenCalledTimes(cloudMode ? 2 : 0);
+				expect(res.status).toHaveBeenCalledWith(200);
+			},
+		);
+	});
+
 	it("does not deploy when the pushed branch does not match", async () => {
 		const res = createResponse();
 
@@ -376,6 +444,8 @@ describe("GitHub app webhook preview deployments", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.cloudMode = false;
+		mocks.deploy.mockResolvedValue(undefined);
 		mocks.githubFindFirst.mockResolvedValue({
 			githubId: "github-provider-id",
 			githubInstallationId: 12345,
@@ -389,31 +459,38 @@ describe("GitHub app webhook preview deployments", () => {
 		mocks.findPreviewDeploymentByApplicationId.mockResolvedValue(undefined);
 	});
 
-	it("redeploys an existing preview even when the limit is reached", async () => {
-		mocks.applicationsFindMany.mockResolvedValue([
-			createApplication({
-				previewLimit: 2,
-				previewDeployments: createPreviewDeployments(3),
-			}),
-		]);
-		mocks.findPreviewDeploymentByApplicationId.mockResolvedValue({
-			previewDeploymentId: "existing-preview-0",
-		});
-		const res = createResponse();
-
-		await handler(createPullRequestRequest("synchronize"), res);
-
-		expect(mocks.createPreviewDeployment).not.toHaveBeenCalled();
-		expect(mocks.queueAdd).toHaveBeenCalledWith(
-			expect.objectContaining({
-				applicationId: "application-id",
-				applicationType: "application-preview",
+	it.each([false, true])(
+		"redeploys an existing remote preview at its limit (cloud %s)",
+		async (cloudMode) => {
+			mocks.cloudMode = cloudMode;
+			mocks.applicationsFindMany.mockResolvedValue([
+				createApplication({
+					serverId: "server-preview",
+					previewLimit: 2,
+					previewDeployments: createPreviewDeployments(3),
+				}),
+			]);
+			mocks.findPreviewDeploymentByApplicationId.mockResolvedValue({
 				previewDeploymentId: "existing-preview-0",
-				type: "deploy",
-			}),
-		);
-		expect(res.status).toHaveBeenCalledWith(200);
-	});
+			});
+			const res = createResponse();
+
+			await handler(createPullRequestRequest("synchronize"), res);
+
+			expect(mocks.createPreviewDeployment).not.toHaveBeenCalled();
+			expect(cloudMode ? mocks.deploy : mocks.queueAdd).toHaveBeenCalledWith(
+				expect.objectContaining({
+					applicationId: "application-id",
+					applicationType: "application-preview",
+					serverId: "server-preview",
+					server: true,
+					previewDeploymentId: "existing-preview-0",
+					type: "deploy",
+				}),
+			);
+			expect(res.status).toHaveBeenCalledWith(200);
+		},
+	);
 
 	it("does not create a new preview once the limit is reached", async () => {
 		mocks.applicationsFindMany.mockResolvedValue([
@@ -461,3 +538,66 @@ describe("GitHub app webhook preview deployments", () => {
 		expect(res.status).toHaveBeenCalledWith(200);
 	});
 });
+
+describe.each([
+	{
+		applicationType: "application",
+		handle: applicationHandler,
+		find: mocks.applicationsFindFirst,
+	},
+	{
+		applicationType: "compose",
+		handle: composeHandler,
+		find: mocks.composeFindFirst,
+	},
+])(
+	"$applicationType token webhook routing",
+	({ applicationType, handle, find }) => {
+		beforeEach(() => {
+			vi.clearAllMocks();
+			mocks.shouldDeploy.mockReturnValue(true);
+			mocks.queueAdd.mockResolvedValue({ id: "job-id" });
+			mocks.deploy.mockResolvedValue(undefined);
+		});
+
+		it.each([
+			{ cloudMode: false, serverId: "server-1" },
+			{ cloudMode: true, serverId: "server-1" },
+			{ cloudMode: false, serverId: null },
+			{ cloudMode: true, serverId: null },
+		])(
+			"routes server $serverId (cloud $cloudMode)",
+			async ({ cloudMode, serverId }) => {
+				mocks.cloudMode = cloudMode;
+				find.mockResolvedValue({
+					applicationId: "application-id",
+					composeId: "compose-id",
+					autoDeploy: true,
+					sourceType: "github",
+					branch: "main",
+					serverId,
+				});
+				const req = createPushRequest("main");
+				req.query = { refreshToken: "test-token" };
+				const res = createResponse();
+
+				await handle(req, res);
+
+				const directDeploy = cloudMode && serverId !== null;
+				expect(
+					directDeploy ? mocks.deploy : mocks.queueAdd,
+				).toHaveBeenCalledWith(
+					expect.objectContaining({
+						applicationType,
+						serverId: serverId || undefined,
+						server: serverId !== null,
+					}),
+				);
+				expect(
+					directDeploy ? mocks.queueAdd : mocks.deploy,
+				).not.toHaveBeenCalled();
+				expect(res.status).toHaveBeenCalledWith(200);
+			},
+		);
+	},
+);
