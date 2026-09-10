@@ -29,13 +29,21 @@ export const getDokployImageTag = () => {
 	return process.env.RELEASE_TAG || "latest";
 };
 
-/** Returns Dokploy docker service image digest */
-export const getServiceImageDigest = async () => {
+/** Docker Hub repository the upstream Dokploy releases are published to. */
+export const UPSTREAM_DOKPLOY_IMAGE_REPOSITORY = "dokploy/dokploy";
+
+/** Returns the image reference the running `dokploy` service was deployed from. */
+const readDokployServiceImage = async () => {
 	const { stdout } = await execAsync(
 		"docker service inspect dokploy --format '{{.Spec.TaskTemplate.ContainerSpec.Image}}'",
 	);
 
-	const currentDigest = stdout.trim().split("@")[1];
+	return stdout.trim();
+};
+
+/** Returns Dokploy docker service image digest */
+export const getServiceImageDigest = async () => {
+	const currentDigest = (await readDokployServiceImage()).split("@")[1];
 
 	if (!currentDigest) {
 		throw new Error("Could not get current service image digest");
@@ -44,13 +52,37 @@ export const getServiceImageDigest = async () => {
 	return currentDigest;
 };
 
+/**
+ * Returns the repository the running `dokploy` service image came from, with its
+ * tag and digest stripped: `dokploy/dokploy` upstream, `ghcr.io/<owner>/dokploy`
+ * for a fork build. Self-update targets this repository so a Dokploy deployed
+ * from a fork can never replace itself with an upstream image.
+ */
+export const getDokployImageRepository = async () => {
+	const [image = ""] = (await readDokployServiceImage()).split("@");
+	const tagSeparator = image.lastIndexOf(":");
+
+	return tagSeparator > image.lastIndexOf("/")
+		? image.slice(0, tagSeparator)
+		: image;
+};
+
 /** Returns latest version number and information whether server update is available by comparing current image's digest against digest for provided image tag via Docker hub API. */
 export const getUpdateData = async (
 	currentVersion: string,
 ): Promise<IUpdateData> => {
 	try {
-		const baseUrl =
-			"https://hub.docker.com/v2/repositories/dokploy/dokploy/tags";
+		const repository = await getDokployImageRepository();
+
+		// A Dokploy deployed from a fork has no upstream release to move to: its
+		// images live in another registry, and Docker Hub's dokploy/dokploy tags
+		// describe a different build. Offering an update here is what silently
+		// replaces a fork build with an upstream image.
+		if (repository !== UPSTREAM_DOKPLOY_IMAGE_REPOSITORY) {
+			return DEFAULT_UPDATE_DATA;
+		}
+
+		const baseUrl = `https://hub.docker.com/v2/repositories/${repository}/tags`;
 		let url: string | null = `${baseUrl}?page_size=100`;
 		let allResults: { digest: string; name: string }[] = [];
 
@@ -295,7 +327,9 @@ export const reloadDockerResource = async (
 				imageTag = currentImageTag;
 			}
 
-			command = `docker service update --force --image dokploy/dokploy:${imageTag} ${resourceName}`;
+			const repository = await getDokployImageRepository();
+
+			command = `docker service update --force --image ${repository}:${imageTag} ${resourceName}`;
 		} else {
 			command = `docker service update --force ${resourceName}`;
 		}
