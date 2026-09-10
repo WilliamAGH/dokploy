@@ -343,7 +343,7 @@ export const serverRouter = createTRPCRouter({
 					isDokployNetworkInstalled: boolean;
 					isSwarmInstalled: boolean;
 					isMainDirectoryInstalled: boolean;
-					privilegeMode: string;
+					privilegeMode: "root" | "sudo" | "none";
 					dockerGroupMember: boolean;
 				};
 			} catch (error) {
