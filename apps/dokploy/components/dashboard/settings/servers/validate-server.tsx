@@ -178,12 +178,17 @@ export const ValidateServer = ({ serverId }: Props) => {
 											}
 										/>
 										<StatusRow
-											label="Docker Group"
-											isEnabled={data?.dockerGroupMember}
-											description={
+											label="Docker Socket Access"
+											isEnabled={
+												data?.privilegeMode === "root" ||
 												data?.dockerGroupMember
-													? "User is in docker group"
-													: "User is not in docker group"
+											}
+											description={
+												data?.privilegeMode === "root"
+													? "Not required (running as root)"
+													: data?.dockerGroupMember
+														? "User is in docker group"
+														: "User is not in docker group"
 											}
 										/>
 									</div>
