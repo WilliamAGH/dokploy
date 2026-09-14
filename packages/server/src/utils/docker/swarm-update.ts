@@ -12,6 +12,7 @@ import {
 	getSwarmServiceDesiredTasks,
 	getTaskFailure,
 	isFailedSwarmTask,
+	retryTransientDockerRead,
 	type SwarmServiceInfo,
 	serviceMatchesOperation,
 } from "./swarm-state";
@@ -41,13 +42,20 @@ const failedUpdateStates = new Set([
 	"rollback_completed",
 ]);
 
+// One lost SSH handshake to a remote Docker host is transport noise, not a
+// deployment result: docker-modem opens a fresh ssh2 connection per API call
+// with no retry, so a single stalled connect would otherwise abort a deploy
+// whose service.update Swarm already accepted. Retry only this read; mutations
+// keep their own reinspect-and-reconcile paths.
 const inspectService = (
 	service: Dockerode.Service,
 	timeoutMs = MIN_SWARM_UPDATE_TIMEOUT_MS,
 ) =>
-	service.inspect({
-		abortSignal: getDockerRequestSignal(timeoutMs),
-	});
+	retryTransientDockerRead(() =>
+		service.inspect({
+			abortSignal: getDockerRequestSignal(timeoutMs),
+		}),
+	);
 
 export const waitForSwarmServiceUpdate = async (
 	docker: Dockerode,
@@ -239,7 +247,7 @@ const getServiceOperation = (inspect: SwarmServiceInfo, id?: string) => ({
 const getPreviousVersion = (inspect: SwarmServiceInfo) =>
 	Math.max(0, Number(inspect.Version?.Index ?? 0) - 1);
 
-const updateSwarmServiceOnce = async (
+export const updateSwarmService = async (
 	docker: Dockerode,
 	serviceName: string,
 	settings: CreateServiceOptions,
@@ -359,30 +367,6 @@ const updateSwarmServiceOnce = async (
 		expectedOperation,
 		previousVersion,
 	);
-};
-
-const TRANSIENT_REMOTE_DOCKER_ERROR =
-	/(?:timed out while waiting for handshake|econnreset|socket hang up|etimedout)/i;
-const REMOTE_DOCKER_RETRY_DELAYS_MS = [1_000, 3_000] as const;
-
-export const updateSwarmService = async (
-	docker: Dockerode,
-	serviceName: string,
-	settings: CreateServiceOptions,
-): Promise<void> => {
-	for (const delayMs of [0, ...REMOTE_DOCKER_RETRY_DELAYS_MS]) {
-		try {
-			await updateSwarmServiceOnce(docker, serviceName, settings);
-			return;
-		} catch (error) {
-			if (
-				!TRANSIENT_REMOTE_DOCKER_ERROR.test(String(error)) ||
-				delayMs === REMOTE_DOCKER_RETRY_DELAYS_MS.at(-1)
-			)
-				throw error;
-			await sleep(delayMs);
-		}
-	}
 };
 
 export { DEPLOYMENT_ID_LABEL } from "./swarm-state";

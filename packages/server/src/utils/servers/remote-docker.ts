@@ -14,9 +14,6 @@ export const getRemoteDocker = async (serverId?: string | null) => {
 		// @ts-expect-error Dockerode's type omits its supported sshOptions field.
 		sshOptions: {
 			privateKey: server.sshKey?.privateKey,
-			readyTimeout: 60_000,
-			keepaliveInterval: 5_000,
-			keepaliveCountMax: 3,
 		},
 	});
 

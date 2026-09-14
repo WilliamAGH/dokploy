@@ -47,6 +47,55 @@ export const getDockerRequestSignal = (timeoutMs = DOCKER_REQUEST_TIMEOUT_MS) =>
 		AbortSignal.timeout(DOCKER_REQUEST_TIMEOUT_MS),
 	]);
 
+const TRANSIENT_TRANSPORT_LEVELS = new Set([
+	"client-timeout",
+	"client-socket",
+	"client-dns",
+]);
+const TRANSIENT_TRANSPORT_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+const delay = (milliseconds: number) =>
+	new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+// A remote Docker read runs over a per-request SSH connection (docker-modem opens
+// a fresh ssh2 client per API call, no retry). A single lost handshake or reset is
+// transport noise, not a Swarm result, and would otherwise fail a deployment whose
+// service.update Swarm already accepted. A Docker HTTP error carries a numeric
+// statusCode and is never retried here; only read-only calls use this helper, so a
+// retried call cannot replay a mutation.
+export const isTransientTransportError = (error: unknown): boolean => {
+	if (typeof error !== "object" || error === null) return false;
+	if (typeof (error as { statusCode?: unknown }).statusCode === "number")
+		return false;
+	const level = (error as { level?: unknown }).level;
+	if (typeof level === "string" && TRANSIENT_TRANSPORT_LEVELS.has(level))
+		return true;
+	const code = (error as { code?: unknown }).code;
+	if (code === "ECONNRESET" || code === "ETIMEDOUT" || code === "EPIPE")
+		return true;
+	const message = String((error as { message?: unknown }).message ?? error);
+	return /timed out while waiting for handshake|connection lost before handshake|no response from server|socket hang up/i.test(
+		message,
+	);
+};
+
+// Retry a read-only Docker API call on a transient transport failure. `read` is
+// called fresh each attempt so it builds a new abort signal and SSH connection.
+export const retryTransientDockerRead = async <T>(
+	read: () => Promise<T>,
+): Promise<T> => {
+	let lastError: unknown;
+	for (const delayMs of [0, ...TRANSIENT_TRANSPORT_RETRY_DELAYS_MS]) {
+		if (delayMs > 0) await delay(delayMs);
+		try {
+			return await read();
+		} catch (error) {
+			if (!isTransientTransportError(error)) throw error;
+			lastError = error;
+		}
+	}
+	throw lastError;
+};
+
 export const getDeploymentId = (
 	taskTemplate: CreateServiceOptions["TaskTemplate"] | undefined,
 ) =>
@@ -89,10 +138,12 @@ export const getExpectedTasks = async (
 	current = false,
 	keyByNode = false,
 ) => {
-	const serviceTasks = (await docker.listTasks({
-		abortSignal: getDockerRequestSignal(timeoutMs),
-		filters: JSON.stringify({ service: [serviceName] }),
-	})) as SwarmTask[];
+	const serviceTasks = (await retryTransientDockerRead(() =>
+		docker.listTasks({
+			abortSignal: getDockerRequestSignal(timeoutMs),
+			filters: JSON.stringify({ service: [serviceName] }),
+		}),
+	)) as SwarmTask[];
 	const matching = serviceTasks.filter((task) =>
 		taskMatchesOperation(task, operation),
 	);
@@ -149,11 +200,13 @@ export const getSwarmServiceDesiredTasks = async (
 	serviceName: string,
 	mode: "service" | "replicated-job" | "global-job",
 ) => {
-	const [service] = (await docker.listServices({
-		abortSignal: getDockerRequestSignal(),
-		filters: JSON.stringify({ name: [serviceName] }),
-		status: true,
-	})) as SwarmServiceStatus[];
+	const [service] = (await retryTransientDockerRead(() =>
+		docker.listServices({
+			abortSignal: getDockerRequestSignal(),
+			filters: JSON.stringify({ name: [serviceName] }),
+			status: true,
+		}),
+	)) as SwarmServiceStatus[];
 	const status = service?.ServiceStatus;
 	const desiredTasks =
 		mode === "replicated-job"
@@ -169,9 +222,11 @@ export const getSwarmServiceDesiredTasks = async (
 };
 
 export const getSwarmActiveNodeCount = async (docker: Dockerode) => {
-	const nodes = (await docker.listNodes({
-		abortSignal: getDockerRequestSignal(),
-	})) as Array<{
+	const nodes = (await retryTransientDockerRead(() =>
+		docker.listNodes({
+			abortSignal: getDockerRequestSignal(),
+		}),
+	)) as Array<{
 		Spec?: { Availability?: string };
 		Status?: { State?: string };
 	}>;
@@ -191,10 +246,12 @@ export const getNextOperationGeneration = async (
 	currentGeneration: number,
 ) => {
 	if (!operationId) return currentGeneration + 1;
-	const tasks = (await docker.listTasks({
-		abortSignal: getDockerRequestSignal(),
-		filters: JSON.stringify({ service: [serviceName] }),
-	})) as SwarmTask[];
+	const tasks = (await retryTransientDockerRead(() =>
+		docker.listTasks({
+			abortSignal: getDockerRequestSignal(),
+			filters: JSON.stringify({ service: [serviceName] }),
+		}),
+	)) as SwarmTask[];
 	return (
 		tasks
 			.filter((task) => getDeploymentId(task.Spec) === operationId)

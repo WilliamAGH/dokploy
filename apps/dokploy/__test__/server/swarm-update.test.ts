@@ -79,6 +79,60 @@ describe("updateSwarmService", () => {
 		);
 	});
 
+	it("retries a transient SSH handshake failure on the initial inspect", async () => {
+		const inspect = vi
+			.fn()
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Timed out while waiting for handshake"), {
+					level: "client-timeout",
+				}),
+			)
+			.mockResolvedValueOnce({
+				ServiceStatus: { DesiredTasks: 1 },
+				Spec: { TaskTemplate: { ForceUpdate: 3 } },
+				Version: { Index: 10 },
+			})
+			.mockResolvedValueOnce({
+				Spec: { TaskTemplate: { ForceUpdate: 4 } },
+				UpdateStatus: { State: "completed", StartedAt: "operation-1" },
+				Version: { Index: 11 },
+			});
+		const swarmService = {
+			id: "service-id",
+			inspect,
+			update: vi.fn(async () => undefined),
+		};
+		const docker = {
+			getService: vi.fn(() => swarmService),
+			listTasks: vi.fn(async () => [task("running")]),
+		} as unknown as DockerClient;
+
+		await expect(
+			updateSwarmService(docker, "test-service", settings()),
+		).resolves.toBeUndefined();
+		expect(inspect).toHaveBeenCalledTimes(3);
+	});
+
+	it("does not retry a non-transport inspect error", async () => {
+		const inspect = vi
+			.fn()
+			.mockRejectedValue({ statusCode: 500, message: "boom" });
+		const swarmService = {
+			id: "service-id",
+			inspect,
+			update: vi.fn(async () => undefined),
+		};
+		const docker = {
+			getService: vi.fn(() => swarmService),
+			listTasks: vi.fn(),
+		} as unknown as DockerClient;
+
+		await expect(
+			updateSwarmService(docker, "test-service", settings()),
+		).rejects.toMatchObject({ statusCode: 500 });
+		expect(inspect).toHaveBeenCalledTimes(1);
+	});
+
 	it("creates only after a 404 with explicit registry authentication", async () => {
 		const operationId = "rollback-id";
 		const inspect = vi
