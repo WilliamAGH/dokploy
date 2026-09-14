@@ -20,6 +20,7 @@ import {
 	sourceRevisionSchema,
 } from "../providers/git";
 import { getRemoteDocker } from "../servers/remote-docker";
+import { retryTransientDockerRead } from "./swarm-state";
 
 interface RegistryAuth {
 	username: string;
@@ -982,12 +983,14 @@ export const waitForSwarmServiceConvergence = async (
 
 	let lastState = "unknown";
 	while (true) {
-		const info = await service.inspect();
+		const info = await retryTransientDockerRead(() => service.inspect());
 		const desiredTasksCount = info.Spec?.Mode?.Replicated?.Replicas ?? 1;
 
-		const tasks = await remoteDocker.listTasks({
-			filters: JSON.stringify({ service: [appName] }),
-		});
+		const tasks = await retryTransientDockerRead(() =>
+			remoteDocker.listTasks({
+				filters: JSON.stringify({ service: [appName] }),
+			}),
+		);
 		const currentTasks = tasks.filter(
 			(task) => task.DesiredState === "running",
 		);

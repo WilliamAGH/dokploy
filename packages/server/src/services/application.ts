@@ -359,10 +359,15 @@ export const deployApplication = async ({
 		}
 
 		command += `echo "\nError occurred ❌, check the logs for details." >> ${deployment.logPath};`;
-		if (serverId) {
-			await execAsyncRemote(serverId, command);
-		} else {
-			await execAsync(command);
+		try {
+			if (serverId) {
+				await execAsyncRemote(serverId, command);
+			} else {
+				await execAsync(command);
+			}
+		} catch {
+			// Appending to the deploy log is best effort; a second remote SSH
+			// failure here must not skip recording the error status below.
 		}
 		await updateDeploymentStatus(deployment.deploymentId, "error");
 		await updateApplicationStatus(applicationId, "error");
@@ -461,10 +466,15 @@ export const rebuildApplication = async ({
 		}
 
 		command += `echo "\nError occurred ❌, check the logs for details." >> ${deployment.logPath};`;
-		if (serverId) {
-			await execAsyncRemote(serverId, command);
-		} else {
-			await execAsync(command);
+		try {
+			if (serverId) {
+				await execAsyncRemote(serverId, command);
+			} else {
+				await execAsync(command);
+			}
+		} catch {
+			// Appending to the deploy log is best effort; a second remote SSH
+			// failure here must not skip recording the error status below.
 		}
 		await updateDeploymentStatus(deployment.deploymentId, "error");
 		await updateApplicationStatus(applicationId, "error");
