@@ -239,7 +239,7 @@ const getServiceOperation = (inspect: SwarmServiceInfo, id?: string) => ({
 const getPreviousVersion = (inspect: SwarmServiceInfo) =>
 	Math.max(0, Number(inspect.Version?.Index ?? 0) - 1);
 
-export const updateSwarmService = async (
+const updateSwarmServiceOnce = async (
 	docker: Dockerode,
 	serviceName: string,
 	settings: CreateServiceOptions,
@@ -359,6 +359,30 @@ export const updateSwarmService = async (
 		expectedOperation,
 		previousVersion,
 	);
+};
+
+const TRANSIENT_REMOTE_DOCKER_ERROR =
+	/(?:timed out while waiting for handshake|econnreset|socket hang up|etimedout)/i;
+const REMOTE_DOCKER_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+
+export const updateSwarmService = async (
+	docker: Dockerode,
+	serviceName: string,
+	settings: CreateServiceOptions,
+): Promise<void> => {
+	for (const delayMs of [0, ...REMOTE_DOCKER_RETRY_DELAYS_MS]) {
+		try {
+			await updateSwarmServiceOnce(docker, serviceName, settings);
+			return;
+		} catch (error) {
+			if (
+				!TRANSIENT_REMOTE_DOCKER_ERROR.test(String(error)) ||
+				delayMs === REMOTE_DOCKER_RETRY_DELAYS_MS.at(-1)
+			)
+				throw error;
+			await sleep(delayMs);
+		}
+	}
 };
 
 export { DEPLOYMENT_ID_LABEL } from "./swarm-state";

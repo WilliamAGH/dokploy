@@ -166,7 +166,6 @@ export const execAsyncRemote = async (
 	return new Promise((resolve, reject) => {
 		const conn = new Client();
 
-		sleep(1000);
 		conn
 			.once("ready", () => {
 				conn.exec(command, (err, stream) => {
@@ -258,6 +257,9 @@ export const execAsyncRemote = async (
 				username: server.username,
 				privateKey: server.sshKey?.privateKey,
 				timeout: 99999,
+				readyTimeout: 60_000,
+				keepaliveInterval: 5_000,
+				keepaliveCountMax: 3,
 			});
 	});
 };
