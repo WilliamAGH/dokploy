@@ -75,7 +75,7 @@ afterEach(() => {
 });
 
 describe("monitoring image setup", () => {
-	it("uses the image override and host-proc capability for remote monitoring", async () => {
+	it("uses the image override for remote monitoring", async () => {
 		const image =
 			"ghcr.io/williamagh/dokploy-monitoring@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 		vi.stubEnv("MONITORING_IMAGE", image);
@@ -87,7 +87,6 @@ describe("monitoring image setup", () => {
 			expect.objectContaining({
 				TaskTemplate: expect.objectContaining({
 					ContainerSpec: expect.objectContaining({
-						CapabilityAdd: ["CAP_SYS_PTRACE"],
 						Image: image,
 					}),
 				}),
@@ -95,7 +94,7 @@ describe("monitoring image setup", () => {
 		);
 	});
 
-	it("uses the upstream fallback and host-proc capability for local monitoring", async () => {
+	it("uses the upstream fallback for local monitoring", async () => {
 		await setupWebMonitoring();
 
 		expect(mocks.pullImage).toHaveBeenCalledWith("dokploy/monitoring:latest");
@@ -103,7 +102,6 @@ describe("monitoring image setup", () => {
 			expect.objectContaining({
 				TaskTemplate: expect.objectContaining({
 					ContainerSpec: expect.objectContaining({
-						CapabilityAdd: ["CAP_SYS_PTRACE"],
 						Image: "dokploy/monitoring:latest",
 					}),
 				}),

@@ -12,6 +12,7 @@ import {
 	createTeamsNotification,
 	createTelegramNotification,
 	findNotificationById,
+	findOwner,
 	getWebServerSettings,
 	IS_CLOUD,
 	removeNotificationById,
@@ -517,13 +518,9 @@ export const notificationRouter = createTRPCRouter({
 						});
 					}
 
-					organizationId = settings.metricsConfig.server.organizationId ?? "";
-					if (!organizationId) {
-						throw new TRPCError({
-							code: "BAD_REQUEST",
-							message: "Local monitoring organization is not configured",
-						});
-					}
+					organizationId =
+						settings.metricsConfig.server.organizationId ??
+						(await findOwner()).organizationId;
 					ServerName = "Dokploy";
 				} else {
 					const result = await db

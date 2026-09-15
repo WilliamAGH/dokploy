@@ -4,12 +4,14 @@ const mocks = vi.hoisted(() => ({
 	settings: vi.fn(),
 	send: vi.fn(),
 	servers: vi.fn(),
+	findOwner: vi.fn(),
 	updateSettings: vi.fn(),
 	setupMonitoring: vi.fn(),
 }));
 
 vi.mock("@dokploy/server", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@dokploy/server")>()),
+	findOwner: mocks.findOwner,
 	getWebServerSettings: mocks.settings,
 	IS_CLOUD: false,
 	sendServerThresholdNotifications: mocks.send,
@@ -71,6 +73,7 @@ describe("inotify notification routing", () => {
 		mocks.servers.mockResolvedValue([
 			{ organizationId: "server-org", name: "Test server" },
 		]);
+		mocks.findOwner.mockResolvedValue({ organizationId: "fallback-owner-org" });
 		mocks.updateSettings.mockResolvedValue({});
 		mocks.setupMonitoring.mockResolvedValue(undefined);
 	});
@@ -100,6 +103,7 @@ describe("inotify notification routing", () => {
 			}),
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 		expect(mocks.send).not.toHaveBeenCalled();
+		expect(mocks.findOwner).not.toHaveBeenCalled();
 	});
 
 	it("sends a local alert only to its stamped organization", async () => {
@@ -111,14 +115,17 @@ describe("inotify notification routing", () => {
 		});
 	});
 
-	it("rejects a legacy local configuration without an organization", async () => {
+	it("sends a legacy local alert to the owner fallback", async () => {
 		mocks.settings.mockResolvedValue({
 			metricsConfig: { server: { token: alert.Token } },
 		});
-		await expect(
-			caller.receiveNotification({ ...alert, ServerType: "Dokploy" }),
-		).rejects.toMatchObject({ code: "BAD_REQUEST" });
-		expect(mocks.send).not.toHaveBeenCalled();
+		await caller.receiveNotification({ ...alert, ServerType: "Dokploy" });
+		expect(mocks.findOwner).toHaveBeenCalledExactlyOnceWith();
+		expect(mocks.send).toHaveBeenCalledExactlyOnceWith("fallback-owner-org", {
+			...alert,
+			ServerType: "Dokploy",
+			ServerName: "Dokploy",
+		});
 	});
 
 	it("stamps the active organization instead of accepting a client value", async () => {

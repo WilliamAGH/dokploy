@@ -7,6 +7,7 @@ import {
 	initCancelDeployments,
 	initCronJobs,
 	initEnterpriseBackupCronJobs,
+	initInotifyThresholds,
 	initializeNetwork,
 	initSchedules,
 	initVolumeBackupsCronJobs,
@@ -62,6 +63,7 @@ void app.prepare().then(async () => {
 			createDefaultMiddlewares();
 			await initializeNetwork();
 			await initCronJobs();
+			initInotifyThresholds();
 			await initSchedules();
 			await initCancelDeployments();
 			await initVolumeBackupsCronJobs();

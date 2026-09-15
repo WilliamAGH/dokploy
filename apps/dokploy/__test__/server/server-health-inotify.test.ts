@@ -10,23 +10,22 @@ vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 	getRemoteDocker: async () => ({ listNetworks: async () => [] }),
 }));
 
-const b64 = (value: string) => Buffer.from(value).toString("base64");
-const reply = (extra: Record<string, unknown> = {}) => {
-	mocks.exec.mockResolvedValue({
-		stdout: JSON.stringify({
-			inotifyMaxInstances: 128,
-			inotifyMaxWatches: 524288,
-			inotifyMaxQueuedEvents: 16384,
-			inotifyDefaultUid: 0,
-			inotifyExecutionUid: 1000,
-			inotifyKnownUsersBase64: b64("0\troot\n1000\toperator\n"),
-			inotifyUsersBase64: b64(
-				"0\troot\t1\n0\troot\t1\n1000\toperator\t1\n2345\t\t1\n",
-			),
-			...extra,
+const reply = (
+	rows = "execution\t1000\nuser\t0\t1\nuser\t0\t1\nuser\t1000\t1\nuser\t2345\t1\n",
+	complete = true,
+) => {
+	mocks.exec.mockImplementation((_serverId: string, command: string) =>
+		Promise.resolve({
+			stdout: command.includes("docker run --rm")
+				? `limits\t524288\t128\t16384\ndaemon\t0\n${rows}${complete ? "end\n" : ""}`
+				: JSON.stringify({
+						containerCount: 3,
+						memTotalBytes: 1024,
+						diskTotalBytes: 2048,
+					}),
+			stderr: "",
 		}),
-		stderr: "",
-	});
+	);
 };
 
 describe("per-user inotify health", () => {
@@ -37,19 +36,15 @@ describe("per-user inotify health", () => {
 		const { inotify } = await getServerHealth("test-org", "test-server");
 		expect(inotify.defaultUid).toBe(0);
 		expect(inotify.users).toEqual([
-			{ uid: 0, username: "root", currentInstances: 2 },
-			{ uid: 1000, username: "operator", currentInstances: 1 },
+			{ uid: 0, username: null, currentInstances: 2 },
+			{ uid: 1000, username: null, currentInstances: 1 },
 			{ uid: 2345, username: null, currentInstances: 1 },
 		]);
 		expect(inotify).not.toHaveProperty("currentInstances");
 	});
 
 	it("keeps daemon and execution UIDs selectable at zero and deduplicates equal UIDs", async () => {
-		reply({
-			inotifyUsersBase64: "",
-			inotifyKnownUsersBase64: "",
-			inotifyExecutionUid: 0,
-		});
+		reply("execution\t0\n");
 		const { inotify } = await getServerHealth("test-org", "test-server");
 		expect(inotify.users).toEqual([
 			{ uid: 0, username: null, currentInstances: 0 },
@@ -57,10 +52,12 @@ describe("per-user inotify health", () => {
 	});
 
 	it("reports unreadable proc evidence as unavailable", async () => {
-		reply({
-			inotifyErrorBase64: b64("Host process descriptors could not be read"),
-		});
-		const { inotify } = await getServerHealth("test-org", "test-server");
-		expect(inotify.error).toBe("Host process descriptors could not be read");
+		reply("user\t0\t2\n", false);
+		const health = await getServerHealth("test-org", "test-server");
+		expect(health.inotify.error).toBeTruthy();
+		expect(health.inotify.users).toEqual([]);
+		expect(health.containers.containerCount).toBe(3);
+		expect(health.resources.memTotalBytes).toBe(1024);
+		expect(health.disk.totalBytes).toBe(2048);
 	});
 });

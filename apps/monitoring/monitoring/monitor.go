@@ -8,10 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -55,8 +52,6 @@ type AlertPayload struct {
 	Timestamp  string  `json:"Timestamp"`
 	Token      string  `json:"Token"`
 }
-
-var hostProcRoot = "/host/proc"
 
 func getRealOS() string {
 	if content, err := os.ReadFile("/etc/os-release"); err == nil {
@@ -202,6 +197,10 @@ func CheckThresholds(metrics database.ServerMetric) error {
 	// log.Printf("Callback URL: %s", callbackURL)
 	// log.Printf("Metrics token: %s", metricsToken)
 
+	if cpuThreshold == 0 && memThreshold == 0 {
+		return nil
+	}
+
 	if cpuThreshold > 0 && metrics.CPU > cpuThreshold {
 		alert := AlertPayload{
 			ServerType: cfg.Server.ServerType,
@@ -232,115 +231,7 @@ func CheckThresholds(metrics database.ServerMetric) error {
 		}
 	}
 
-	if err := sendInotifyAlerts(hostProcRoot, callbackURL, cfg.Server.ServerType, metricsToken, metrics.Timestamp); err != nil {
-		return fmt.Errorf("failed to send inotify alert: %v", err)
-	}
-
 	return nil
-}
-
-func sendInotifyAlerts(procRoot, callbackURL, serverType, metricsToken, timestamp string) error {
-	counts, limit, err := inotifyInstanceCounts(procRoot)
-	if err != nil {
-		return err
-	}
-
-	uids := make([]int, 0, len(counts))
-	for uid := range counts {
-		uids = append(uids, uid)
-	}
-	sort.Ints(uids)
-
-	for _, uid := range uids {
-		count := counts[uid]
-		if count < limit {
-			continue
-		}
-		alert := AlertPayload{
-			ServerType: serverType,
-			Type:       "Inotify",
-			Value:      100 * float64(count) / float64(limit),
-			Threshold:  100,
-			Message:    fmt.Sprintf("host UID %d has an estimated %d inotify instances (limit %d). At this limit, new file watchers can fail (Too many open files), disrupting log collection or app startup. Existing watchers usually keep running.", uid, count, limit),
-			Timestamp:  timestamp,
-			Token:      metricsToken,
-		}
-		if err := sendAlert(callbackURL, alert); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func inotifyInstanceCounts(procRoot string) (map[int]int, int, error) {
-	limitData, err := os.ReadFile(filepath.Join(procRoot, "sys", "fs", "inotify", "max_user_instances"))
-	if err != nil {
-		return nil, 0, fmt.Errorf("read inotify limit: %w", err)
-	}
-	limit, err := strconv.Atoi(strings.TrimSpace(string(limitData)))
-	if err != nil || limit <= 0 {
-		return nil, 0, fmt.Errorf("invalid inotify limit")
-	}
-
-	processes, err := os.ReadDir(procRoot)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read host proc: %w", err)
-	}
-
-	counts := make(map[int]int)
-	for _, process := range processes {
-		if !process.IsDir() {
-			continue
-		}
-		if _, err := strconv.Atoi(process.Name()); err != nil {
-			continue
-		}
-
-		processPath := filepath.Join(procRoot, process.Name())
-		status, err := os.ReadFile(filepath.Join(processPath, "status"))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, 0, fmt.Errorf("read process status: %w", err)
-		}
-
-		uid := -1
-		for _, line := range strings.Split(string(status), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) < 2 || fields[0] != "Uid:" {
-				continue
-			}
-			uid, err = strconv.Atoi(fields[1])
-			break
-		}
-		if err != nil || uid < 0 {
-			return nil, 0, fmt.Errorf("read process UID")
-		}
-
-		fds, err := os.ReadDir(filepath.Join(processPath, "fd"))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, 0, fmt.Errorf("read process file descriptors: %w", err)
-		}
-		for _, fd := range fds {
-			target, err := os.Readlink(filepath.Join(processPath, "fd", fd.Name()))
-			if err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
-				return nil, 0, fmt.Errorf("read process file descriptor: %w", err)
-			}
-			if strings.HasPrefix(target, "anon_inode:inotify") || strings.HasPrefix(target, "anon_inode:[inotify]") {
-				counts[uid]++
-			}
-		}
-	}
-
-	return counts, limit, nil
 }
 
 func sendAlert(callbackURL string, payload AlertPayload) error {

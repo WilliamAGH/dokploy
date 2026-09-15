@@ -145,7 +145,7 @@ export const ShowHealth = ({ serverId }: Props) => {
 		lines.push(`max_user_watches: ${health.inotify.maxWatches}`);
 		lines.push(`max_queued_events: ${health.inotify.maxQueuedEvents}`);
 		lines.push(
-			`Persisted in sysctl: ${health.inotify.persisted ? "yes" : "no"}`,
+			`Persisted in sysctl: ${health.inotify.persisted === null ? "unknown" : health.inotify.persisted ? "yes" : "no"}`,
 		);
 		lines.push("");
 
@@ -219,9 +219,8 @@ export const ShowHealth = ({ serverId }: Props) => {
 						<div>
 							<h3 className="text-lg font-medium">Server diagnostics</h3>
 							<p className="text-sm text-muted-foreground max-w-xl">
-								Runs a read-only check over SSH (inotify limits, disk, Docker
-								network pool, daemon errors). Runs automatically when you open
-								this tab — click Re-check to refresh.
+								Checks inotify usage, disk space, Docker networks, and daemon
+								errors when you open this tab. Click Re-check to refresh.
 							</p>
 						</div>
 						<div className="flex items-center gap-2">
@@ -326,7 +325,11 @@ export const ShowHealth = ({ serverId }: Props) => {
 												health.inotify.persisted ? "default" : "secondary"
 											}
 										>
-											{health.inotify.persisted ? "persisted" : "runtime only"}
+											{health.inotify.persisted === null
+												? "persistence unknown"
+												: health.inotify.persisted
+													? "persisted"
+													: "runtime only"}
 										</Badge>
 										<Tooltip>
 											<TooltipTrigger asChild>

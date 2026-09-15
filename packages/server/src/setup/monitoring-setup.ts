@@ -82,8 +82,6 @@ export const setupMonitoring = async (serverId: string) => {
 		TaskTemplate: {
 			ContainerSpec: {
 				Image: imageName,
-				// Host /proc/<pid>/fd descriptors are ptrace-gated across UIDs.
-				CapabilityAdd: ["CAP_SYS_PTRACE"],
 				Env: [`METRICS_CONFIG=${JSON.stringify(server?.metricsConfig)}`],
 				Mounts: [
 					{
@@ -151,8 +149,6 @@ export const setupWebMonitoring = async () => {
 		TaskTemplate: {
 			ContainerSpec: {
 				Image: imageName,
-				// Host /proc/<pid>/fd descriptors are ptrace-gated across UIDs.
-				CapabilityAdd: ["CAP_SYS_PTRACE"],
 				Env: [
 					`METRICS_CONFIG=${JSON.stringify(webServerSettings?.metricsConfig)}`,
 				],
