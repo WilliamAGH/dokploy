@@ -33288,7 +33288,8 @@
                     "type": "string",
                     "enum": [
                       "Memory",
-                      "CPU"
+                      "CPU",
+                      "Inotify"
                     ]
                   },
                   "Value": {

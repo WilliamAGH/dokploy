@@ -493,7 +493,7 @@ export const notificationRouter = createTRPCRouter({
 		.input(
 			z.object({
 				ServerType: z.enum(["Dokploy", "Remote"]).default("Dokploy"),
-				Type: z.enum(["Memory", "CPU"]),
+				Type: z.enum(["Memory", "CPU", "Inotify"]),
 				Value: z.number(),
 				Threshold: z.number(),
 				Message: z.string(),
@@ -517,7 +517,13 @@ export const notificationRouter = createTRPCRouter({
 						});
 					}
 
-					organizationId = "";
+					organizationId = settings.metricsConfig.server.organizationId ?? "";
+					if (!organizationId) {
+						throw new TRPCError({
+							code: "BAD_REQUEST",
+							message: "Local monitoring organization is not configured",
+						});
+					}
 					ServerName = "Dokploy";
 				} else {
 					const result = await db

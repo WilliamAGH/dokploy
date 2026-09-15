@@ -24,6 +24,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: apps/monitoring/go.mod
+          cache-dependency-path: apps/monitoring/go.sum
+
       - name: Set up pnpm
         uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
@@ -34,6 +40,10 @@ jobs:
         with:
           node-version: 24.4.0
           cache: pnpm
+
+      - name: Test monitoring
+        working-directory: apps/monitoring
+        run: go test ./...
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -92,6 +102,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Build and publish monitoring image
+        id: monitoring
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: ./Dockerfile.monitoring
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/williamagh/dokploy-monitoring:canary-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
       - name: Prepare production environment files
         run: |
           cp apps/dokploy/.env.production.example .env.production
@@ -107,6 +131,8 @@ jobs:
           push: true
           provenance: false
           tags: ${{ env.IMAGE_NAME }}:canary-${{ github.sha }}
+          build-args: |
+            MONITORING_IMAGE=ghcr.io/williamagh/dokploy-monitoring@${{ steps.monitoring.outputs.digest }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}

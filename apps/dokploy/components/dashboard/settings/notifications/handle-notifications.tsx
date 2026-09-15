@@ -1971,29 +1971,27 @@ export const HandleNotifications = ({ notificationId }: Props) => {
 									/>
 								)}
 
-								{isCloud && (
-									<FormField
-										control={form.control}
-										name="serverThreshold"
-										render={({ field }) => (
-											<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-xs gap-2">
-												<div className="space-y-0.5">
-													<FormLabel>Server Threshold</FormLabel>
-													<FormDescription>
-														Trigger the action when the server threshold is
-														reached.
-													</FormDescription>
-												</div>
-												<FormControl>
-													<Switch
-														checked={field.value}
-														onCheckedChange={field.onChange}
-													/>
-												</FormControl>
-											</FormItem>
-										)}
-									/>
-								)}
+								<FormField
+									control={form.control}
+									name="serverThreshold"
+									render={({ field }) => (
+										<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3 shadow-xs gap-2">
+											<div className="space-y-0.5">
+												<FormLabel>Server Threshold</FormLabel>
+												<FormDescription>
+													Notify when CPU, memory, or a user’s inotify instance
+													threshold is reached. Requires server monitoring.
+												</FormDescription>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value}
+													onCheckedChange={field.onChange}
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
 							</div>
 						</div>
 					</form>

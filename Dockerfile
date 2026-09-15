@@ -26,6 +26,8 @@ RUN cp -R /usr/src/app/apps/dokploy/.next /prod/dokploy/.next
 RUN cp -R /usr/src/app/apps/dokploy/dist /prod/dokploy/dist
 
 FROM base AS dokploy
+ARG MONITORING_IMAGE=""
+ENV MONITORING_IMAGE=${MONITORING_IMAGE}
 WORKDIR /app
 
 # Set production

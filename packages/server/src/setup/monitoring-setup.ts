@@ -8,6 +8,10 @@ import { execAsync, execAsyncRemote } from "../utils/process/execAsync";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
 
 const getMonitoringImage = () => {
+	if (process.env.MONITORING_IMAGE) {
+		return process.env.MONITORING_IMAGE;
+	}
+
 	let imageName = "dokploy/monitoring:latest";
 
 	if (
@@ -78,6 +82,8 @@ export const setupMonitoring = async (serverId: string) => {
 		TaskTemplate: {
 			ContainerSpec: {
 				Image: imageName,
+				// Host /proc/<pid>/fd descriptors are ptrace-gated across UIDs.
+				CapabilityAdd: ["CAP_SYS_PTRACE"],
 				Env: [`METRICS_CONFIG=${JSON.stringify(server?.metricsConfig)}`],
 				Mounts: [
 					{
@@ -145,6 +151,8 @@ export const setupWebMonitoring = async () => {
 		TaskTemplate: {
 			ContainerSpec: {
 				Image: imageName,
+				// Host /proc/<pid>/fd descriptors are ptrace-gated across UIDs.
+				CapabilityAdd: ["CAP_SYS_PTRACE"],
 				Env: [
 					`METRICS_CONFIG=${JSON.stringify(webServerSettings?.metricsConfig)}`,
 				],

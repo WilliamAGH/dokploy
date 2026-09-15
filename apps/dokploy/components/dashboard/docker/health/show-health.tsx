@@ -1,5 +1,6 @@
 import {
 	AlertTriangle,
+	CircleHelp,
 	Cpu,
 	Download,
 	HardDrive,
@@ -29,6 +30,11 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { api } from "@/utils/api";
 
 interface Props {
@@ -49,6 +55,7 @@ const SINCE_HOURS_OPTIONS = [
 
 export const ShowHealth = ({ serverId }: Props) => {
 	const [sinceHours, setSinceHours] = useState(24);
+	const [inotifyUid, setInotifyUid] = useState<string>();
 	const {
 		data: health,
 		isFetching,
@@ -65,8 +72,17 @@ export const ShowHealth = ({ serverId }: Props) => {
 	const diskUsedPct = health
 		? pct(health.disk.usedBytes, health.disk.totalBytes)
 		: 0;
-	const inotifyUsedPct = health
-		? pct(health.inotify.currentInstances, health.inotify.maxInstances)
+	const selectedInotifyUser =
+		health?.inotify.users.find((user) => user.uid === Number(inotifyUid)) ??
+		health?.inotify.users.find(
+			(user) => user.uid === health.inotify.defaultUid,
+		) ??
+		health?.inotify.users[0];
+	const inotifyUsedPct = selectedInotifyUser
+		? pct(
+				selectedInotifyUser.currentInstances,
+				health?.inotify.maxInstances ?? 0,
+			)
 		: 0;
 
 	const daemonLogsWindowText = health?.daemonLogsWindow
@@ -110,8 +126,21 @@ export const ShowHealth = ({ serverId }: Props) => {
 		lines.push("");
 
 		lines.push("## Inotify");
+		lines.push(`Default daemon UID: ${health.inotify.defaultUid}`);
+		if (health.inotify.error) {
+			lines.push(`Unavailable: ${health.inotify.error}`);
+		}
+		if (!health.inotify.error) {
+			lines.push("| UID | User | Descriptors | max_user_instances |");
+			lines.push("|---|---|---|---|");
+			for (const user of health.inotify.users) {
+				lines.push(
+					`| ${user.uid} | ${user.username ?? "—"} | ${user.currentInstances} | ${health.inotify.maxInstances} |`,
+				);
+			}
+		}
 		lines.push(
-			`max_user_instances: ${health.inotify.currentInstances} / ${health.inotify.maxInstances}`,
+			"Counts estimate instances per host UID; shared or inherited descriptors may overcount.",
 		);
 		lines.push(`max_user_watches: ${health.inotify.maxWatches}`);
 		lines.push(`max_queued_events: ${health.inotify.maxQueuedEvents}`);
@@ -291,23 +320,84 @@ export const ShowHealth = ({ serverId }: Props) => {
 										<AlertTriangle className="size-4 text-muted-foreground" />
 										Inotify
 									</span>
-									<Badge
-										variant={health.inotify.persisted ? "default" : "secondary"}
-									>
-										{health.inotify.persisted ? "persisted" : "runtime only"}
-									</Badge>
+									<div className="flex items-center gap-2">
+										<Badge
+											variant={
+												health.inotify.persisted ? "default" : "secondary"
+											}
+										>
+											{health.inotify.persisted ? "persisted" : "runtime only"}
+										</Badge>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<button
+													type="button"
+													aria-label="About inotify usage"
+													className="text-muted-foreground hover:text-foreground"
+												>
+													<CircleHelp className="size-4" />
+												</button>
+											</TooltipTrigger>
+											<TooltipContent className="flex-col items-start">
+												<p>
+													At this limit, new file watchers can fail (“Too many
+													open files”), disrupting log collection or app
+													startup. Existing watchers usually keep running.
+												</p>
+												<p className="mt-1 text-xs">
+													Limit and estimate apply to the selected host UID.
+													Shared or inherited file descriptors may overcount.
+												</p>
+											</TooltipContent>
+										</Tooltip>
+									</div>
 								</div>
-								<div className="text-sm">
-									max_user_instances: {health.inotify.currentInstances} /{" "}
-									{health.inotify.maxInstances.toLocaleString()} (
-									{inotifyUsedPct}%)
-								</div>
-								<Progress value={inotifyUsedPct} className="h-2 mt-1" />
-								<div className="text-xs text-muted-foreground mt-2">
-									max_user_watches: {health.inotify.maxWatches.toLocaleString()}{" "}
-									· max_queued_events:{" "}
-									{health.inotify.maxQueuedEvents.toLocaleString()}
-								</div>
+								{health.inotify.error ? (
+									<div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+										<p>Inotify usage unavailable: {health.inotify.error}</p>
+									</div>
+								) : (
+									<>
+										<Select
+											value={String(
+												selectedInotifyUser?.uid ?? health.inotify.defaultUid,
+											)}
+											onValueChange={setInotifyUid}
+										>
+											<SelectTrigger
+												aria-label="Inotify user"
+												className="w-full"
+											>
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												{health.inotify.users.map((user) => (
+													<SelectItem key={user.uid} value={String(user.uid)}>
+														{user.username
+															? `${user.username} (UID ${user.uid})`
+															: `UID ${user.uid}`}
+														{user.uid === health.inotify.defaultUid
+															? " (daemon default)"
+															: ""}
+													</SelectItem>
+												))}
+											</SelectContent>
+										</Select>
+										<div className="mt-2 text-sm">
+											max_user_instances:{" "}
+											{selectedInotifyUser?.currentInstances ?? 0} /{" "}
+											{health.inotify.maxInstances.toLocaleString()} (
+											{inotifyUsedPct}%)
+										</div>
+										<Progress value={inotifyUsedPct} className="mt-1 h-2" />
+										<div className="mt-2 text-xs text-muted-foreground">
+											max_user_watches:{" "}
+											{health.inotify.maxWatches.toLocaleString()} ·
+											max_queued_events:{" "}
+											{health.inotify.maxQueuedEvents.toLocaleString()}
+										</div>
+									</>
+								)}
 							</Card>
 
 							<Card className="p-4">

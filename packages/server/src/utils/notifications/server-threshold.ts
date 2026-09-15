@@ -19,7 +19,7 @@ import {
 } from "./utils";
 
 interface ServerThresholdPayload {
-	Type: "CPU" | "Memory";
+	Type: "CPU" | "Memory" | "Inotify";
 	Value: number;
 	Threshold: number;
 	Message: string;
@@ -56,7 +56,7 @@ export const sendServerThresholdNotifications = async (
 		},
 	});
 
-	const typeEmoji = payload.Type === "CPU" ? "🔲" : "💾";
+	const typeEmoji = { CPU: "🔲", Memory: "💾", Inotify: "👁️" }[payload.Type];
 	const typeColor = 0xff0000; // Rojo para indicar alerta
 
 	for (const notification of notificationList) {
@@ -334,7 +334,7 @@ export const sendServerThresholdNotifications = async (
 											elements: [
 												{
 													tag: "markdown",
-													content: `**Type:**\n${payload.Type === "CPU" ? "🔲" : "💾"} ${payload.Type}`,
+													content: `**Type:**\n${typeEmoji} ${payload.Type}`,
 													text_align: "left",
 													text_size: "normal_v2",
 												},

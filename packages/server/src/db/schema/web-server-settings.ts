@@ -31,6 +31,7 @@ export const webServerSettings = pgTable("webServerSettings", {
 		.$type<{
 			server: {
 				type: "Dokploy" | "Remote";
+				organizationId?: string;
 				refreshRate: number;
 				port: number;
 				token: string;

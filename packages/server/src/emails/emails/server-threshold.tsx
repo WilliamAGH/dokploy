@@ -14,7 +14,7 @@ import { emailTailwindConfig } from "../tailwind-config";
 
 export type TemplateProps = {
 	serverName: string;
-	type: "CPU" | "Memory";
+	type: "CPU" | "Memory" | "Inotify";
 	value: string;
 	threshold: string;
 	message: string;
@@ -56,8 +56,8 @@ export const ServerThresholdEmail = ({
 							Hello,
 						</Text>
 						<Text className="text-black text-[14px] leading-[24px]">
-							The {type} usage on <strong>{serverName}</strong> exceeded the
-							configured threshold.
+							The {type} usage on <strong>{serverName}</strong> reached or
+							exceeded the threshold.
 						</Text>
 						<Section className="flex text-black text-[14px]  leading-[24px] bg-[#F4F4F5] rounded-lg p-2">
 							<Text className="!leading-3 font-bold">Details: </Text>

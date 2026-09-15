@@ -11,7 +11,7 @@ import { adminProcedure, createTRPCRouter } from "../trpc";
 export const adminRouter = createTRPCRouter({
 	setupMonitoring: adminProcedure
 		.input(apiUpdateWebServerMonitoring)
-		.mutation(async ({ input }) => {
+		.mutation(async ({ input, ctx }) => {
 			try {
 				if (IS_CLOUD) {
 					throw new TRPCError({
@@ -24,6 +24,7 @@ export const adminRouter = createTRPCRouter({
 					metricsConfig: {
 						server: {
 							type: "Dokploy",
+							organizationId: ctx.session.activeOrganizationId,
 							refreshRate: input.metricsConfig.server.refreshRate,
 							port: input.metricsConfig.server.port,
 							token: input.metricsConfig.server.token,
