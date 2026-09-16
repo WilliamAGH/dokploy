@@ -30,7 +30,7 @@ export const checkInotifyThresholds = async () => {
 		try {
 			const settings = await getWebServerSettings();
 			const organizationId =
-				settings.metricsConfig?.server.organizationId ??
+				settings?.metricsConfig?.server.organizationId ??
 				(await findOwner()).organizationId;
 			targets.push({ organizationId, name: "Dokploy" });
 		} catch {
