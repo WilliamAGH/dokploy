@@ -47,6 +47,14 @@ func (db *DB) SaveContainerMetric(metric *ContainerMetric) error {
 	return err
 }
 
+// composeGlob matches the container names Compose generates for an appName:
+// `<appName>-<service>-<replica>`. Swarm tasks are `<appName>.<slot>.<id>` and
+// are covered by the LIKE pattern; without this, every Compose resource looks
+// empty even though its metrics were collected.
+func composeGlob(containerName string) string {
+	return containerName + "-*-[0-9]*"
+}
+
 func (db *DB) GetLastNContainerMetrics(containerName string, limit int) ([]ContainerMetric, error) {
 	containerName = strings.TrimPrefix(containerName, "/")
 
@@ -54,13 +62,13 @@ func (db *DB) GetLastNContainerMetrics(containerName string, limit int) ([]Conta
 		WITH recent_metrics AS (
 			SELECT metrics_json
 			FROM container_metrics
-			WHERE container_name = ? OR container_name LIKE ?
+			WHERE container_name = ? OR container_name LIKE ? OR container_name GLOB ?
 			ORDER BY timestamp DESC
 			LIMIT ?
 		)
 		SELECT metrics_json FROM recent_metrics ORDER BY json_extract(metrics_json, '$.timestamp') ASC
 	`
-	rows, err := db.Query(query, containerName, containerName+".%", limit)
+	rows, err := db.Query(query, containerName, containerName+".%", composeGlob(containerName), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -90,12 +98,12 @@ func (db *DB) GetAllMetricsContainer(containerName string) ([]ContainerMetric, e
 		WITH recent_metrics AS (
 			SELECT metrics_json
 			FROM container_metrics
-			WHERE container_name = ? OR container_name LIKE ?
+			WHERE container_name = ? OR container_name LIKE ? OR container_name GLOB ?
 			ORDER BY timestamp DESC
 		)
 		SELECT metrics_json FROM recent_metrics ORDER BY json_extract(metrics_json, '$.timestamp') ASC
 	`
-	rows, err := db.Query(query, containerName, containerName+".%")
+	rows, err := db.Query(query, containerName, containerName+".%", composeGlob(containerName))
 	if err != nil {
 		return nil, err
 	}
