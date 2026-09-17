@@ -246,6 +246,13 @@ export const getAllServers = async () => {
 	return servers;
 };
 
+export const findServersByOrganizationId = async (organizationId: string) => {
+	const servers = await db.query.server.findMany({
+		where: eq(server.organizationId, organizationId),
+	});
+	return servers;
+};
+
 export const getAccessibleServerIds = async (session: {
 	userId: string;
 	activeOrganizationId: string;

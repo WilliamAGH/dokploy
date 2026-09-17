@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findServerById: vi.fn(),
+	findServersByOrganizationId: vi.fn(),
 	getWebServerSettings: vi.fn(),
 	getDokployImageTag: vi.fn(),
 	pullImage: vi.fn(),
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@dokploy/server/constants", () => ({ IS_CLOUD: false }));
 vi.mock("@dokploy/server/services/server", () => ({
 	findServerById: mocks.findServerById,
+	findServersByOrganizationId: mocks.findServersByOrganizationId,
 }));
 vi.mock("@dokploy/server/services/settings", () => ({
 	getDokployImageTag: mocks.getDokployImageTag,
@@ -40,13 +42,22 @@ vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 const notFound = () =>
 	Object.assign(new Error("not found"), { statusCode: 404 });
 
-const createDocker = () => ({
+const createDocker = (nodeId = "node-manager", isManager = true) => ({
 	createService: vi.fn().mockResolvedValue(undefined),
+	info: vi.fn().mockResolvedValue({
+		Swarm: {
+			NodeID: nodeId,
+			ControlAvailable: isManager,
+			RemoteManagers: [{ NodeID: nodeId }],
+		},
+	}),
+	listNodes: vi.fn().mockResolvedValue([{ ID: nodeId }]),
 	getContainer: vi.fn(() => ({
 		remove: vi.fn().mockRejectedValue(notFound()),
 	})),
 	getService: vi.fn(() => ({
 		inspect: vi.fn().mockRejectedValue(notFound()),
+		remove: vi.fn().mockRejectedValue(notFound()),
 	})),
 });
 
@@ -56,9 +67,16 @@ let webDocker: ReturnType<typeof createDocker>;
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.stubEnv("NODE_ENV", "test");
-	remoteDocker = createDocker();
-	webDocker = createDocker();
-	mocks.findServerById.mockResolvedValue({ metricsConfig: {} });
+	// distinct nodes: a remote server is never the control-plane node
+	remoteDocker = createDocker("node-remote");
+	webDocker = createDocker("node-control-plane");
+	mocks.findServerById.mockResolvedValue({
+		serverId: "server-id",
+		name: "server-one",
+		organizationId: "org-id",
+		metricsConfig: {},
+	});
+	mocks.findServersByOrganizationId.mockResolvedValue([]);
 	mocks.getWebServerSettings.mockResolvedValue({
 		metricsConfig: { server: { port: 4500 } },
 	});
