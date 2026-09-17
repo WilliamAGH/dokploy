@@ -15,7 +15,14 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: ghcr.io/williamagh/dokploy
+  # registry.haiku.host is the canonical hostname for the self-hosted Nexus
+  # `docker-hosted` repository, and the reference the control plane already pulls.
+  REGISTRY: registry.haiku.host
+  IMAGE_NAME: registry.haiku.host/dokploy
+  # The monitoring image stays on ghcr because every Swarm node pulls it, and
+  # `docker-hosted` is forceBasicAuth with no anonymous member in the mirror
+  # group -- a Nexus reference would need a credential on all ~17 hosts.
+  MONITORING_IMAGE_NAME: ghcr.io/williamagh/dokploy-monitoring
 
 jobs:
   validate:
@@ -102,6 +109,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Nexus container registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.NEXUS_USER }}
+          password: ${{ secrets.NEXUS_PASS }}
+
       - name: Build and publish monitoring image
         id: monitoring
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
@@ -111,7 +125,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
-          tags: ghcr.io/williamagh/dokploy-monitoring:canary-${{ github.sha }}
+          tags: ${{ env.MONITORING_IMAGE_NAME }}:canary-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -132,7 +146,7 @@ jobs:
           provenance: false
           tags: ${{ env.IMAGE_NAME }}:canary-${{ github.sha }}
           build-args: |
-            MONITORING_IMAGE=ghcr.io/williamagh/dokploy-monitoring@${{ steps.monitoring.outputs.digest }}
+            MONITORING_IMAGE=${{ env.MONITORING_IMAGE_NAME }}@${{ steps.monitoring.outputs.digest }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
