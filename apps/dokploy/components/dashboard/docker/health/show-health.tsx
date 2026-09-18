@@ -131,7 +131,7 @@ export const ShowHealth = ({ serverId }: Props) => {
 			lines.push(`Unavailable: ${health.inotify.error}`);
 		}
 		if (!health.inotify.error) {
-			lines.push("| UID | User | Descriptors | max_user_instances |");
+			lines.push("| UID | User | Instances | max_user_instances |");
 			lines.push("|---|---|---|---|");
 			for (const user of health.inotify.users) {
 				lines.push(
@@ -140,7 +140,7 @@ export const ShowHealth = ({ serverId }: Props) => {
 			}
 		}
 		lines.push(
-			"Counts estimate instances per host UID; shared or inherited descriptors may overcount.",
+			"Counts inotify instances per host UID; descriptors inherited across fork() are counted once, as the kernel charges them.",
 		);
 		lines.push(`max_user_watches: ${health.inotify.maxWatches}`);
 		lines.push(`max_queued_events: ${health.inotify.maxQueuedEvents}`);

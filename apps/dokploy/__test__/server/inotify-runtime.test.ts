@@ -29,7 +29,7 @@ describe("shared host inotify collector", () => {
 		);
 	});
 
-	it("aggregates descriptor references per real UID and retains zero-count execution users", async () => {
+	it("aggregates instance counts per real UID and retains zero-count execution users", async () => {
 		mocks.remote.mockResolvedValue(
 			sample("execution\t1000\nuser\t0\t10\nuser\t0\t2\nuser\t2345\t7\n"),
 		);

@@ -15,23 +15,58 @@ export interface InotifyUsage {
 	error?: string;
 }
 
-const scan = String.raw`
+// Exported for the fixture-driven scan test; the container passes no argument
+// and the scan then reads the bind-mounted host /proc.
+export const inotifyScanScript = String.raw`
 set -eu
 root=/host/proc
+[ $# -eq 0 ] || root=$1
 printf 'limits\t%s\t%s\t%s\n' "$(cat "$root/sys/fs/inotify/max_user_watches")" "$(cat "$root/sys/fs/inotify/max_user_instances")" "$(cat "$root/sys/fs/inotify/max_queued_events")"
+
+# An inotify descriptor's fdinfo holds its offset, flags and mount id, then one
+# line per watch in watch-descriptor order. Bounded so a heavily watched
+# descriptor cannot stall the scan.
+fingerprint() {
+  fp= fpn=0
+  { while [ "$fpn" -lt 64 ] && IFS= read -r fpline; do
+      fp=$fp$fpline'|'
+      fpn=$((fpn + 1))
+    done < "$1"; } 2>/dev/null || return 1
+  [ -n "$fp" ]
+}
+
+# fs.inotify.max_user_instances is charged per inotify instance, not per
+# descriptor referring to one. fork() hands the child the same instance under
+# the same descriptor number, so an exact fdinfo match against the parent's
+# descriptor of that number means the parent already reported this instance.
+inherited() {
+  parent=$root/$2
+  link=$(readlink "$parent/fd/$3" 2>/dev/null || true)
+  case "$link" in anon_inode:inotify|'anon_inode:[inotify]') ;; *) return 1 ;; esac
+  fingerprint "$1/fdinfo/$3" || return 1
+  own=$fp
+  fingerprint "$parent/fdinfo/$3" || return 1
+  [ "$own" = "$fp" ]
+}
+
 for process in "$root"/[0-9]*; do
   [ -d "$process" ] || continue
-  uid= name=
+  uid= name= ppid=0
   if ! status=$(cat "$process/status" 2>/dev/null); then
     [ ! -d "$process" ] && continue
     exit 2
   fi
   while read -r key value rest; do
-    case "$key" in Name:) name=$value ;; Uid:) uid=$value; break ;; esac
+    case "$key" in
+      Name:) name=$value ;;
+      PPid:) ppid=$value ;;
+      Uid:) uid=$value; break ;;
+    esac
   done <<EOF
 $status
 EOF
   case "$uid" in ''|*[!0-9]*) exit 2 ;; esac
+  case "$ppid" in ''|*[!0-9]*) exit 2 ;; esac
   [ "$name" != dockerd ] || printf 'daemon\t%s\n' "$uid"
   if ! descriptors=$(ls -ln "$process/fd" 2>/dev/null); then
     [ ! -d "$process" ] && continue
@@ -43,7 +78,15 @@ EOF
   fi
   count=0
   while read -r descriptor; do
-    case "$descriptor" in l*' -> anon_inode:inotify'|l*' -> anon_inode:[inotify]') count=$((count + 1)) ;; esac
+    case "$descriptor" in
+      l*' -> anon_inode:inotify'|l*' -> anon_inode:[inotify]') ;;
+      *) continue ;;
+    esac
+    # An "ls -ln" row ends in "<fd> -> <target>", after a field count that
+    # varies by implementation and timestamp format.
+    set -- $descriptor
+    while [ $# -gt 3 ]; do shift; done
+    inherited "$process" "$ppid" "$1" || count=$((count + 1))
   done <<EOF
 $descriptors
 EOF
@@ -54,7 +97,7 @@ printf 'end\n'
 
 const buildCommand = (remote: boolean) => {
 	const name = `dokploy-inotify-${randomUUID()}`;
-	const reader = `busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0 timeout -s KILL 20 sh -c '${scan.replaceAll("'", "'\\''")}'`;
+	const reader = `busybox@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0 timeout -s KILL 20 sh -c '${inotifyScanScript.replaceAll("'", "'\\''")}'`;
 	return `set -eu
 name=${name}
 trap 'timeout -k 2 5 docker rm -f "$name" >/dev/null 2>&1 || true' EXIT HUP INT TERM

@@ -64,7 +64,7 @@ export const checkInotifyThresholds = async () => {
 						Type: "Inotify",
 						Value: (100 * user.currentInstances) / usage.maxInstances,
 						Threshold: 100,
-						Message: `Host UID ${user.uid} has ${user.currentInstances} inotify descriptor references (limit ${usage.maxInstances}). Shared descriptors may overcount. At the limit, new file watchers can fail, disrupting log collection or app startup. Existing watchers usually keep running.`,
+						Message: `Host UID ${user.uid} holds ${user.currentInstances} inotify instances (limit ${usage.maxInstances}). At the limit, new file watchers can fail, disrupting log collection or app startup. Existing watchers usually keep running.`,
 						Timestamp: new Date(now).toISOString(),
 						Token: "",
 						ServerName: target.name,
