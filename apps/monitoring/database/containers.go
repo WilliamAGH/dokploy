@@ -48,11 +48,19 @@ func (db *DB) SaveContainerMetric(metric *ContainerMetric) error {
 }
 
 // composeGlob matches the container names Compose generates for an appName:
-// `<appName>-<service>-<replica>`. Swarm tasks are `<appName>.<slot>.<id>` and
-// are covered by the LIKE pattern; without this, every Compose resource looks
+// `<appName>-<service>-<replica>`. Without this, every Compose resource looks
 // empty even though its metrics were collected.
 func composeGlob(containerName string) string {
 	return containerName + "-*-[0-9]*"
+}
+
+// swarmStackGlob matches what a Compose resource deployed as a Swarm stack
+// generates: `<appName>_<service>.<slot>.<id>`. Neither the LIKE pattern (a
+// plain Swarm service, `<appName>.<slot>.<id>`) nor composeGlob (a `-` where
+// these carry `_`) reaches it. An appName never contains `_`, so demanding one
+// immediately after it keeps an appName sharing a prefix from matching.
+func swarmStackGlob(containerName string) string {
+	return containerName + "_*.[0-9]*"
 }
 
 func (db *DB) GetLastNContainerMetrics(containerName string, limit int) ([]ContainerMetric, error) {
@@ -62,13 +70,13 @@ func (db *DB) GetLastNContainerMetrics(containerName string, limit int) ([]Conta
 		WITH recent_metrics AS (
 			SELECT metrics_json
 			FROM container_metrics
-			WHERE container_name = ? OR container_name LIKE ? OR container_name GLOB ?
+			WHERE container_name = ? OR container_name LIKE ? OR container_name GLOB ? OR container_name GLOB ?
 			ORDER BY timestamp DESC
 			LIMIT ?
 		)
 		SELECT metrics_json FROM recent_metrics ORDER BY json_extract(metrics_json, '$.timestamp') ASC
 	`
-	rows, err := db.Query(query, containerName, containerName+".%", composeGlob(containerName), limit)
+	rows, err := db.Query(query, containerName, containerName+".%", composeGlob(containerName), swarmStackGlob(containerName), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -98,12 +106,12 @@ func (db *DB) GetAllMetricsContainer(containerName string) ([]ContainerMetric, e
 		WITH recent_metrics AS (
 			SELECT metrics_json
 			FROM container_metrics
-			WHERE container_name = ? OR container_name LIKE ? OR container_name GLOB ?
+			WHERE container_name = ? OR container_name LIKE ? OR container_name GLOB ? OR container_name GLOB ?
 			ORDER BY timestamp DESC
 		)
 		SELECT metrics_json FROM recent_metrics ORDER BY json_extract(metrics_json, '$.timestamp') ASC
 	`
-	rows, err := db.Query(query, containerName, containerName+".%", composeGlob(containerName))
+	rows, err := db.Query(query, containerName, containerName+".%", composeGlob(containerName), swarmStackGlob(containerName))
 	if err != nil {
 		return nil, err
 	}

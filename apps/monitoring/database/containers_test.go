@@ -35,7 +35,9 @@ func insert(t *testing.T, db *DB, name string) {
 }
 
 // A Compose resource stores `<appName>-<service>-<replica>`; a Swarm service
-// stores `<appName>.<slot>.<id>`. Querying by the bare appName must reach both.
+// stores `<appName>.<slot>.<id>`; a Compose resource deployed as a Swarm stack
+// stores `<appName>_<service>.<slot>.<id>`. Querying by the bare appName must
+// reach all three.
 func TestGetAllMetricsContainerMatchesComposeAndSwarmNames(t *testing.T) {
 	const appName = "compose-generate-open-source-monitor-py5hih"
 
@@ -48,8 +50,11 @@ func TestGetAllMetricsContainerMatchesComposeAndSwarmNames(t *testing.T) {
 		{"compose hyphenated service", appName + "-docker-socket-proxy-1", true},
 		{"compose second replica", appName + "-alloy-2", true},
 		{"swarm task", appName + ".1.abcdef", true},
+		{"swarm stack task", appName + "_gateway.1.abcdef", true},
+		{"swarm stack hyphenated service", appName + "_llama-router.2.ghijkl", true},
 		{"exact name", appName, true},
 		{"different appName sharing a prefix", appName + "x-alloy-1", false},
+		{"different appName sharing a prefix, swarm stack", appName + "x_gateway.1.abcdef", false},
 		{"unrelated container", "some-other-app-xyz123-alloy-1", false},
 	}
 
@@ -73,6 +78,20 @@ func TestGetLastNContainerMetricsMatchesComposeNames(t *testing.T) {
 	const appName = "javachat-dev-pkswmu"
 	db := newTestDB(t)
 	insert(t, db, appName+"-postgres-1")
+
+	metrics, err := db.GetLastNContainerMetrics(appName, 10)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(metrics) != 1 {
+		t.Fatalf("got %d metrics, want 1", len(metrics))
+	}
+}
+
+func TestGetLastNContainerMetricsMatchesSwarmStackNames(t *testing.T) {
+	const appName = "juicefs-runtime-production-jwbis1"
+	db := newTestDB(t)
+	insert(t, db, appName+"_consumer.2.z45fuybrfpcdr7434lqhaspec")
 
 	metrics, err := db.GetLastNContainerMetrics(appName, 10)
 	if err != nil {
