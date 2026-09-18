@@ -10,7 +10,7 @@ import { pullImage, pullRemoteImage } from "../utils/docker/utils";
 import { execAsync, execAsyncRemote } from "../utils/process/execAsync";
 import { getRemoteDocker } from "../utils/servers/remote-docker";
 
-const getMonitoringImage = () => {
+export const getMonitoringImage = () => {
 	if (process.env.MONITORING_IMAGE) {
 		return process.env.MONITORING_IMAGE;
 	}

@@ -131,16 +131,18 @@ export const ShowHealth = ({ serverId }: Props) => {
 			lines.push(`Unavailable: ${health.inotify.error}`);
 		}
 		if (!health.inotify.error) {
-			lines.push("| UID | User | Instances | max_user_instances |");
+			lines.push(
+				"| UID | User | Instances | Descriptors | max_user_instances |",
+			);
 			lines.push("|---|---|---|---|");
 			for (const user of health.inotify.users) {
 				lines.push(
-					`| ${user.uid} | ${user.username ?? "—"} | ${user.currentInstances} | ${health.inotify.maxInstances} |`,
+					`| ${user.uid} | ${user.username ?? "—"} | ${user.currentInstances} | ${user.descriptorReferences} | ${health.inotify.maxInstances} |`,
 				);
 			}
 		}
 		lines.push(
-			"Counts inotify instances per host UID; descriptors inherited across fork() are counted once, as the kernel charges them.",
+			"Instances is what fs.inotify.max_user_instances charges, separated with kcmp(2). Descriptors counts every reference to them, so it is higher wherever fork() shared one.",
 		);
 		lines.push(`max_user_watches: ${health.inotify.maxWatches}`);
 		lines.push(`max_queued_events: ${health.inotify.maxQueuedEvents}`);

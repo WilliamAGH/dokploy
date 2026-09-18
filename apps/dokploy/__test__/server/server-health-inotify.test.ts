@@ -11,7 +11,7 @@ vi.mock("@dokploy/server/utils/servers/remote-docker", () => ({
 }));
 
 const reply = (
-	rows = "execution\t1000\nuser\t0\t1\nuser\t0\t1\nuser\t1000\t1\nuser\t2345\t1\n",
+	rows = "execution\t1000\nuser\t0\t2\t1\nuser\t0\t1\t1\nuser\t1000\t1\t1\nuser\t2345\t1\t1\n",
 	complete = true,
 ) => {
 	mocks.exec.mockImplementation((_serverId: string, command: string) =>
@@ -36,9 +36,19 @@ describe("per-user inotify health", () => {
 		const { inotify } = await getServerHealth("test-org", "test-server");
 		expect(inotify.defaultUid).toBe(0);
 		expect(inotify.users).toEqual([
-			{ uid: 0, username: null, currentInstances: 2 },
-			{ uid: 1000, username: null, currentInstances: 1 },
-			{ uid: 2345, username: null, currentInstances: 1 },
+			{ uid: 0, username: null, currentInstances: 2, descriptorReferences: 3 },
+			{
+				uid: 1000,
+				username: null,
+				currentInstances: 1,
+				descriptorReferences: 1,
+			},
+			{
+				uid: 2345,
+				username: null,
+				currentInstances: 1,
+				descriptorReferences: 1,
+			},
 		]);
 		expect(inotify).not.toHaveProperty("currentInstances");
 	});
@@ -47,12 +57,12 @@ describe("per-user inotify health", () => {
 		reply("execution\t0\n");
 		const { inotify } = await getServerHealth("test-org", "test-server");
 		expect(inotify.users).toEqual([
-			{ uid: 0, username: null, currentInstances: 0 },
+			{ uid: 0, username: null, currentInstances: 0, descriptorReferences: 0 },
 		]);
 	});
 
 	it("reports unreadable proc evidence as unavailable", async () => {
-		reply("user\t0\t2\n", false);
+		reply("user\t0\t2\t2\n", false);
 		const health = await getServerHealth("test-org", "test-server");
 		expect(health.inotify.error).toBeTruthy();
 		expect(health.inotify.users).toEqual([]);

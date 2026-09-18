@@ -12,11 +12,25 @@ import (
 	"github.com/mauriciogm/dokploy/apps/monitoring/config"
 	"github.com/mauriciogm/dokploy/apps/monitoring/containers"
 	"github.com/mauriciogm/dokploy/apps/monitoring/database"
+	"github.com/mauriciogm/dokploy/apps/monitoring/inotify"
 	"github.com/mauriciogm/dokploy/apps/monitoring/middleware"
 	"github.com/mauriciogm/dokploy/apps/monitoring/monitoring"
 )
 
 func main() {
+	// The Dokploy control plane runs this image as a throwaway container to read
+	// the host's inotify usage; that reader needs no metrics configuration.
+	if len(os.Args) > 1 && os.Args[1] == "inotify-scan" {
+		root := "/host/proc"
+		if len(os.Args) > 2 {
+			root = os.Args[2]
+		}
+		if err := inotify.Scan(root, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	godotenv.Load()
 
 	// Get configuration

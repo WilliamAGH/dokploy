@@ -110,11 +110,13 @@ describe("inotify threshold notifications", () => {
 							uid: serverId ? 2000 : 1000,
 							username: null,
 							currentInstances: 10,
+							descriptorReferences: 10,
 						},
 						{
 							uid: serverId ? 2001 : 1001,
 							username: null,
 							currentInstances: 9,
+							descriptorReferences: 9,
 						},
 					],
 				}),
@@ -153,7 +155,16 @@ describe("inotify threshold notifications", () => {
 			metricsConfig: { server: {} },
 		});
 		mocks.getInotifyUsage.mockResolvedValue(
-			usage({ users: [{ uid: 1000, username: null, currentInstances: 10 }] }),
+			usage({
+				users: [
+					{
+						uid: 1000,
+						username: null,
+						currentInstances: 10,
+						descriptorReferences: 12,
+					},
+				],
+			}),
 		);
 		const { checkInotifyThresholds } = await loadThresholds();
 
@@ -174,7 +185,16 @@ describe("inotify threshold notifications", () => {
 		let currentInstances = 10;
 		mocks.getInotifyUsage.mockImplementation(() =>
 			Promise.resolve(
-				usage({ users: [{ uid: 1000, username: null, currentInstances }] }),
+				usage({
+					users: [
+						{
+							uid: 1000,
+							username: null,
+							currentInstances,
+							descriptorReferences: currentInstances,
+						},
+					],
+				}),
 			),
 		);
 		const { checkInotifyThresholds } = await loadThresholds();

@@ -31,7 +31,9 @@ describe("shared host inotify collector", () => {
 
 	it("aggregates instance counts per real UID and retains zero-count execution users", async () => {
 		mocks.remote.mockResolvedValue(
-			sample("execution\t1000\nuser\t0\t10\nuser\t0\t2\nuser\t2345\t7\n"),
+			sample(
+				"execution\t1000\nuser\t0\t14\t10\nuser\t0\t2\t2\nuser\t2345\t7\t7\n",
+			),
 		);
 		const result = await getInotifyUsage("remote-id");
 		expect(result).toMatchObject({
@@ -41,17 +43,34 @@ describe("shared host inotify collector", () => {
 		});
 		expect(result.error).toBeUndefined();
 		expect(result.users).toEqual([
-			{ uid: 0, username: null, currentInstances: 12 },
-			{ uid: 1000, username: null, currentInstances: 0 },
-			{ uid: 2345, username: null, currentInstances: 7 },
+			{
+				uid: 0,
+				username: null,
+				currentInstances: 12,
+				descriptorReferences: 16,
+			},
+			{
+				uid: 1000,
+				username: null,
+				currentInstances: 0,
+				descriptorReferences: 0,
+			},
+			{
+				uid: 2345,
+				username: null,
+				currentInstances: 7,
+				descriptorReferences: 7,
+			},
 		]);
 	});
 
 	it.each([
-		"limits\t524288\t128\t16384\ndaemon\t0\nuser\t0\t12\n",
+		"limits\t524288\t128\t16384\ndaemon\t0\nuser\t0\t12\t12\n",
 		"limits\t524288\t0\t16384\ndaemon\t0\nend\n",
 		"limits\t524288\t128\t16384\ndaemon\t0\ndaemon\t1000\nend\n",
-		"limits\t524288\t128\t16384\ndaemon\t0\nuser\t0\t-1\nend\n",
+		"limits\t524288\t128\t16384\ndaemon\t0\nuser\t0\t-1\t-1\nend\n",
+		"limits\t524288\t128\t16384\ndaemon\t0\nuser\t0\t2\nend\n",
+		"limits\t524288\t128\t16384\ndaemon\t0\nuser\t0\t2\t3\nend\n",
 		"limits\t524288\t128\t16384\ndaemon\t0\nend\nend\n",
 	])(
 		"rejects incomplete or invalid evidence without presenting a healthy count",
