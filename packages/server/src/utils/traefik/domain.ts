@@ -1,4 +1,5 @@
 import type { Domain } from "@dokploy/server/services/domain";
+import { TRPCError } from "@trpc/server";
 import type { ApplicationNested } from "../builders";
 import {
 	createServiceConfig,
@@ -30,21 +31,54 @@ export const ingressTargets = (app: ApplicationNested): ApplicationNested[] => {
 	return [app, ...extra.map((serverId) => ({ ...app, serverId }))];
 };
 
+/**
+ * A router-local certificate resolver and multiple ingress servers are an
+ * unsupported combination, refused here rather than rendered into something that
+ * silently fails. Traefik is explicit that several instances cannot share Let's
+ * Encrypt: nothing routes a challenge to the instance that started it, and the KV
+ * store that once did was dropped in 2.0 (certificate-resolvers/acme.md). Under
+ * the round-robin DNS this feature exists for, the challenge for ANY of those
+ * instances lands on whichever one DNS picked, so disabling the resolver on the
+ * extra hosts would not rescue the first one either. Multi-ingress HTTPS takes a
+ * certificate installed on each target (certificates create --serverId), which is
+ * what the hand-written ingress files already do.
+ *
+ * Refusing in manageDomain covers every caller: domain create, update, enable,
+ * forward-auth, and an application update that adds an ingress server.
+ */
+const assertResolverIsSingleInstance = (
+	domain: Domain,
+	targetCount: number,
+) => {
+	if (targetCount < 2) {
+		return;
+	}
+	const resolver =
+		domain.certificateType === "letsencrypt"
+			? "letsencrypt"
+			: domain.certificateType === "custom"
+				? domain.customCertResolver
+				: null;
+	if (!resolver) {
+		return;
+	}
+	throw new TRPCError({
+		code: "BAD_REQUEST",
+		message: `Domain ${domain.host} uses certificate resolver "${resolver}", which cannot be shared by the ${targetCount} Traefik instances serving this application. Install a certificate on each ingress server and set the domain's certificate type to none.`,
+	});
+};
+
 export const manageDomain = async (app: ApplicationNested, domain: Domain) => {
-	for (const target of ingressTargets(app)) {
-		await manageDomainOnServer(
-			target,
-			domain,
-			target.serverId !== app.serverId,
-		);
+	const targets = ingressTargets(app);
+	if (domain.enabled) {
+		assertResolverIsSingleInstance(domain, targets.length);
+	}
+	for (const target of targets) {
+		await manageDomainOnServer(target, domain);
 	}
 };
 
-const manageDomainOnServer = async (
-	app: ApplicationNested,
-	domain: Domain,
-	isIngressServer = false,
-) => {
+const manageDomainOnServer = async (app: ApplicationNested, domain: Domain) => {
 	const { appName } = app;
 
 	// A disabled domain keeps its configuration in the database but must never
@@ -84,25 +118,6 @@ const manageDomainOnServer = async (
 		);
 	} else {
 		delete config.http.routers[routerNameSecure];
-	}
-
-	// An ingress server never runs an ACME challenge for this hostname. Traefik is
-	// explicit that several instances cannot share Let's Encrypt, because nothing
-	// routes the challenge to the instance that started it, and the KV store that
-	// once did was dropped in 2.0 (traefik docs, certificate-resolvers/acme.md:
-	// "it is not possible to run multiple instances of Traefik 2.0 with Let's
-	// Encrypt enabled"). Under the round-robin DNS this feature exists for, the
-	// challenge lands on a random one. So keep `tls` — the host still terminates
-	// TLS from its own certificate store — and drop the resolver. Give that host a
-	// certificate for the hostname (certificates create --serverId), or a DNS-01
-	// resolver, which needs no inbound challenge.
-	if (isIngressServer) {
-		for (const routerKey of [routerName, routerNameSecure]) {
-			const router = config.http.routers[routerKey];
-			if (router?.tls && "certResolver" in router.tls) {
-				router.tls = {};
-			}
-		}
 	}
 
 	config.http.services[serviceName] = createServiceConfig(app, domain);

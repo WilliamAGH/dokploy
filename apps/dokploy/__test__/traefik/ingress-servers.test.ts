@@ -130,25 +130,28 @@ test("a domain is published to every ingress server, pointing at the same backen
 	}
 });
 
-test("only the application's own server runs the ACME resolver", async () => {
-	await manageDomain(application(["server-a"]), {
+test("a router-local certificate resolver is refused when there are ingress servers", async () => {
+	const letsencrypt = {
 		...domain(1),
 		https: true,
-		certificateType: "letsencrypt",
-	});
+		certificateType: "letsencrypt" as const,
+	};
 
-	expect(
-		routeFile("server-primary")?.http?.routers?.[
-			"harness-staging-router-websecure-1"
-		]?.tls,
-	).toEqual({ certResolver: "letsencrypt" });
-	// Several Traefik instances cannot share Let's Encrypt: the challenge lands on
-	// whichever one the round-robin DNS picked. The ingress server still terminates
-	// TLS, from a certificate installed on it.
-	expect(
-		routeFile("server-a")?.http?.routers?.["harness-staging-router-websecure-1"]
-			?.tls,
-	).toEqual({});
+	// One instance is fine. Several cannot share a resolver, and rendering it
+	// anyway would fail the challenge on whichever host DNS picked.
+	await expect(
+		manageDomain(application([]), letsencrypt),
+	).resolves.toBeUndefined();
+	await expect(
+		manageDomain(application(["server-a"]), letsencrypt),
+	).rejects.toThrow(/cannot be shared by the 2 Traefik instances/);
+	await expect(
+		manageDomain(application(["server-a"]), {
+			...letsencrypt,
+			certificateType: "custom",
+			customCertResolver: "porkbun",
+		}),
+	).rejects.toThrow(/"porkbun"/);
 });
 
 test("removing a domain removes it from every ingress server", async () => {
