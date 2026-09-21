@@ -406,6 +406,16 @@ export const applicationRouter = createTRPCRouter({
 					),
 				async () =>
 					await removeTraefikConfig(application.appName, application.serverId),
+				// Each ingress server holds its own copy of this application's routes
+				// and middlewares, cleaned exactly as the server it runs on is.
+				...(application.ingressServerIds ?? [])
+					.filter((serverId) => serverId !== application.serverId)
+					.flatMap((serverId) => [
+						async () =>
+							await deleteAllMiddlewares({ ...application, serverId }),
+						async () =>
+							await removeTraefikConfig(application.appName, serverId),
+					]),
 				async () =>
 					await removeService(application?.appName, application.serverId),
 			];
@@ -856,6 +866,18 @@ export const applicationRouter = createTRPCRouter({
 						code: "UNAUTHORIZED",
 						message: "You are not authorized to access this build server",
 					});
+				}
+			}
+
+			if (input.ingressServerIds?.length) {
+				const accessibleIds = await getAccessibleServerIds(ctx.session);
+				for (const serverId of input.ingressServerIds) {
+					if (!accessibleIds.has(serverId)) {
+						throw new TRPCError({
+							code: "UNAUTHORIZED",
+							message: "You are not authorized to access this ingress server",
+						});
+					}
 				}
 			}
 

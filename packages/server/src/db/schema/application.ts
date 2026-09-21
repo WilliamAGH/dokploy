@@ -1,5 +1,5 @@
 import { VALID_BRANCH_REGEX } from "@dokploy/server/utils/git-branch-validation";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import {
 	bigint,
 	boolean,
@@ -186,6 +186,15 @@ export const applications = pgTable("application", {
 	swarmVipConnectionReuse: boolean("swarmVipConnectionReuse")
 		.notNull()
 		.default(true),
+	// Servers whose Traefik also publishes this application's routes. The
+	// application still runs on `serverId`; these hosts only forward to it, so one
+	// hostname can answer on several ingress addresses (round-robin DNS) without a
+	// second application row. Every id must share the application's Swarm, because
+	// the generated backend is the service VIP `http://<appName>:<port>`.
+	ingressServerIds: text("ingressServerIds")
+		.array()
+		.notNull()
+		.default(sql`ARRAY[]::text[]`),
 	//
 	replicas: integer("replicas").default(1).notNull(),
 	applicationStatus: applicationStatus("applicationStatus")
@@ -388,6 +397,7 @@ const createSchema = createInsertSchema(applications, {
 	endpointSpecSwarm: EndpointSpecSwarmSchema.nullable(),
 	ulimitsSwarm: UlimitsSwarmSchema.nullable(),
 	swarmVipConnectionReuse: z.boolean().optional(),
+	ingressServerIds: z.array(z.string()).optional(),
 	enableSubmodules: z.boolean().optional(),
 	icon: z
 		.string()

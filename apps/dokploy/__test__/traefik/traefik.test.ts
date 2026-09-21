@@ -130,6 +130,7 @@ const baseApp: ApplicationNested = {
 	stopGracePeriodSwarm: null,
 	ulimitsSwarm: null,
 	swarmVipConnectionReuse: true,
+	ingressServerIds: [],
 };
 
 const baseDomain: Domain = {

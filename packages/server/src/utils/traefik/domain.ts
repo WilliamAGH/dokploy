@@ -17,14 +17,33 @@ import {
 } from "./forward-auth";
 import { createPathMiddlewares, removePathMiddlewares } from "./middleware";
 
+/**
+ * Every server whose Traefik publishes this application's routes: the one it runs
+ * on, plus each `ingressServerIds` entry. Each target is the application seen from
+ * that server, so every writer below keeps working unchanged — the file, its
+ * middlewares and its routers are per server.
+ */
+export const ingressTargets = (app: ApplicationNested): ApplicationNested[] => {
+	const extra = [...new Set(app.ingressServerIds ?? [])].filter(
+		(serverId) => serverId && serverId !== app.serverId,
+	);
+	return [app, ...extra.map((serverId) => ({ ...app, serverId }))];
+};
+
 export const manageDomain = async (app: ApplicationNested, domain: Domain) => {
+	for (const target of ingressTargets(app)) {
+		await manageDomainOnServer(target, domain);
+	}
+};
+
+const manageDomainOnServer = async (app: ApplicationNested, domain: Domain) => {
 	const { appName } = app;
 
 	// A disabled domain keeps its configuration in the database but must never
 	// expose a traefik router. Guarding here covers every caller (create, update,
 	// forward-auth, toggle) so a disabled domain can't be revived from any path.
 	if (!domain.enabled) {
-		await removeDomain(app, domain.uniqueConfigKey);
+		await removeDomainOnServer(app, domain.uniqueConfigKey);
 		return;
 	}
 
@@ -99,6 +118,15 @@ export const manageDomain = async (app: ApplicationNested, domain: Domain) => {
 };
 
 export const removeDomain = async (
+	application: ApplicationNested,
+	uniqueKey: number,
+) => {
+	for (const target of ingressTargets(application)) {
+		await removeDomainOnServer(target, uniqueKey);
+	}
+};
+
+const removeDomainOnServer = async (
 	application: ApplicationNested,
 	uniqueKey: number,
 ) => {

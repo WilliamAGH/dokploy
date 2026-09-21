@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { docker } from "@dokploy/server/constants";
 import { db } from "@dokploy/server/db";
 import {
@@ -28,10 +29,12 @@ import { cloneGiteaRepository } from "@dokploy/server/utils/providers/gitea";
 import { cloneGithubRepository } from "@dokploy/server/utils/providers/github";
 import { cloneGitlabRepository } from "@dokploy/server/utils/providers/gitlab";
 import { createTraefikConfig } from "@dokploy/server/utils/traefik/application";
-import { manageDomain } from "@dokploy/server/utils/traefik/domain";
+import {
+	manageDomain,
+	removeDomain,
+} from "@dokploy/server/utils/traefik/domain";
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { isDeepStrictEqual } from "node:util";
 import type { z } from "zod";
 import { encodeBase64 } from "../utils/docker/utils";
 import { getDokployUrl } from "./admin";
@@ -147,11 +150,34 @@ export const findApplicationByName = async (appName: string) => {
 	return application;
 };
 
+const findDroppedIngressServerIds = async (
+	applicationId: string,
+	nextIngressServerIds: string[],
+) => {
+	const current = await db.query.applications.findFirst({
+		columns: { ingressServerIds: true, serverId: true },
+		where: eq(applications.applicationId, applicationId),
+	});
+	const next = new Set(nextIngressServerIds);
+	return (current?.ingressServerIds ?? []).filter(
+		(serverId) => !next.has(serverId) && serverId !== current?.serverId,
+	);
+};
+
 export const updateApplication = async (
 	applicationId: string,
 	applicationData: Partial<Application>,
 ) => {
 	const { appName, ...rest } = applicationData;
+	// A server dropped from ingressServerIds keeps this application's routes until
+	// they are removed from it, and only the pre-update list names it.
+	const droppedIngressServerIds =
+		"ingressServerIds" in applicationData
+			? await findDroppedIngressServerIds(
+					applicationId,
+					applicationData.ingressServerIds ?? [],
+				)
+			: [];
 	const application = await db
 		.update(applications)
 		.set({
@@ -160,8 +186,23 @@ export const updateApplication = async (
 		.where(eq(applications.applicationId, applicationId))
 		.returning();
 
-	if ("swarmVipConnectionReuse" in applicationData) {
+	if (
+		"swarmVipConnectionReuse" in applicationData ||
+		"ingressServerIds" in applicationData
+	) {
 		const applicationWithDomains = await findApplicationById(applicationId);
+		for (const serverId of droppedIngressServerIds) {
+			// Scope the removal to the dropped server: an unfiltered copy would
+			// still carry the surviving ingress list and wipe their live routes.
+			const dropped = {
+				...applicationWithDomains,
+				serverId,
+				ingressServerIds: [],
+			};
+			for (const domain of applicationWithDomains.domains) {
+				await removeDomain(dropped, domain.uniqueConfigKey);
+			}
+		}
 		for (const domain of applicationWithDomains.domains) {
 			await manageDomain(applicationWithDomains, domain);
 		}

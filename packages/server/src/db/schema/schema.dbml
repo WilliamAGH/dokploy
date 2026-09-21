@@ -269,6 +269,7 @@ table application {
   labelsSwarm json
   networkSwarm json
   swarmVipConnectionReuse boolean [not null, default: true]
+  ingressServerIds text[] [not null, default: `ARRAY[]::text[]`]
   replicas integer [not null, default: 1]
   applicationStatus applicationStatus [not null, default: 'idle']
   buildType buildType [not null, default: 'nixpacks']

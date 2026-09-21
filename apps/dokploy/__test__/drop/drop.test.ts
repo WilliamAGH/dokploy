@@ -156,6 +156,7 @@ const baseApp: ApplicationNested = {
 	stopGracePeriodSwarm: null,
 	ulimitsSwarm: null,
 	swarmVipConnectionReuse: true,
+	ingressServerIds: [],
 };
 
 /**

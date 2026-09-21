@@ -3695,6 +3695,12 @@
                   "swarmVipConnectionReuse": {
                     "type": "boolean"
                   },
+                  "ingressServerIds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "replicas": {
                     "type": "number"
                   },
