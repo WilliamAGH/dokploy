@@ -8,6 +8,30 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const REAL_TEST_TIMEOUT = 180000; // 3 minutes
 
+// This suite runs the real builders, so it needs the real toolchain. Fork CI
+// excludes the file for that reason. Locally, a missing prerequisite must skip the
+// tests that need it and say so, not fail them: a build host without nixpacks, or a
+// daemon that never joined a swarm, is not a defect in the code under test.
+const hasNixpacks = await execAsync("command -v nixpacks")
+	.then(() => true)
+	.catch(() => false);
+const hasSwarm = await execAsync(
+	"docker info --format '{{.Swarm.LocalNodeState}}'",
+)
+	.then(({ stdout }) => stdout.trim() === "active")
+	.catch(() => false);
+
+if (!hasNixpacks) {
+	console.warn(
+		"skipping the nixpacks deployments: nixpacks is not on PATH (https://nixpacks.com/docs/install)",
+	);
+}
+if (!hasSwarm) {
+	console.warn(
+		"skipping the Dockerfile deployment: this Docker daemon is not a swarm manager (docker swarm init)",
+	);
+}
+
 // Mock ONLY database and notifications
 vi.mock("@dokploy/server/db", () => {
 	const createChainableMock = (): any => {
@@ -236,7 +260,7 @@ describe(
 			console.log("✅ Cleanup completed\n");
 		});
 
-		it(
+		it.skipIf(!hasNixpacks)(
 			"should REALLY clone git repo and build with nixpacks",
 			async () => {
 				console.log(`\n🚀 Testing real deployment with app: ${currentAppName}`);
@@ -364,7 +388,7 @@ describe(
 			REAL_TEST_TIMEOUT,
 		);
 
-		it(
+		it.skipIf(!hasNixpacks)(
 			"should REALLY clone with submodules when enabled",
 			async () => {
 				const submodulesAppName = `real-submodules-${Date.now()}`;
@@ -409,7 +433,7 @@ describe(
 			REAL_TEST_TIMEOUT,
 		);
 
-		it(
+		it.skipIf(!hasNixpacks)(
 			"should verify REAL commit info extraction",
 			async () => {
 				console.log(`\n🚀 Testing real commit info: ${currentAppName}`);
@@ -437,7 +461,7 @@ describe(
 			REAL_TEST_TIMEOUT,
 		);
 
-		it(
+		it.skipIf(!hasSwarm)(
 			"should REALLY build with Dockerfile",
 			async () => {
 				const dockerfileAppName = `real-dockerfile-${Date.now()}`;

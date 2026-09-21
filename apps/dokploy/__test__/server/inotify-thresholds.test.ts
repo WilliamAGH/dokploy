@@ -1,5 +1,13 @@
 import type { InotifyUsage } from "@dokploy/server/services/inotify";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findOwner: vi.fn(),
@@ -56,6 +64,13 @@ const loadThresholds = async () => {
 	vi.resetModules();
 	return import("@dokploy/server/utils/notifications/inotify");
 };
+
+// Transforming this module's import graph costs seconds on a cold cache, and
+// whichever test imported it first paid that out of its own timeout. Pay it once
+// here instead: vi.resetModules() re-executes the module but keeps the transform.
+beforeAll(async () => {
+	await import("@dokploy/server/utils/notifications/inotify");
+}, 60_000);
 
 beforeEach(() => {
 	vi.clearAllMocks();
