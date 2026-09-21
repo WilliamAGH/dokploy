@@ -81,6 +81,60 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # The two suites `validate` excludes drive the real builders and the real Docker
+  # daemon, so they need nixpacks and a Swarm manager. A GitHub runner is an
+  # ephemeral VM that can have both, which is the only place they can run without
+  # putting that toolchain on a developer machine or a fleet host. They skip
+  # themselves when a prerequisite is missing, so this job is the one place they
+  # actually execute. It does not gate `publish`: they clone from GitHub and run
+  # Nix builds, so an upstream outage must not hold a release.
+  real-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+        with:
+          version: 10.22.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 24.4.0
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The runtime image's own pin. Its install.sh takes VERSION from the
+      # environment, so pass it rather than taking whatever is newest today.
+      - name: Install nixpacks
+        env:
+          VERSION: "1.41.0"
+        run: |
+          curl -sSL https://nixpacks.com/install.sh -o install.sh
+          chmod +x install.sh
+          sudo -E ./install.sh
+          nixpacks --version
+
+      # Swarm plus the overlay every deployed service attaches to. Without the
+      # network the build succeeds and the deploy fails "network dokploy-network
+      # not found", which is what `server setup` creates on a real host.
+      - name: Enable Swarm
+        run: |
+          docker swarm init --advertise-addr 127.0.0.1
+          test "$(docker info --format '{{.Swarm.LocalNodeState}}')" = active
+          docker network create --driver overlay --attachable dokploy-network
+          docker network inspect dokploy-network >/dev/null
+
+      - name: Run the real-execution suites
+        run: |
+          pnpm --filter=dokploy exec vitest run --config __test__/vitest.config.ts \
+            __test__/deploy/application.real.test.ts \
+            __test__/setup/monitoring-setup.real.test.ts
+
   publish:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/canary'
     needs: validate

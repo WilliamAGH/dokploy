@@ -8,10 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const REAL_TEST_TIMEOUT = 180000; // 3 minutes
 
-// This suite runs the real builders, so it needs the real toolchain. Fork CI
-// excludes the file for that reason. Locally, a missing prerequisite must skip the
-// tests that need it and say so, not fail them: a build host without nixpacks, or a
-// daemon that never joined a swarm, is not a defect in the code under test.
+// This suite runs the real builders against the real daemon, so it needs nixpacks,
+// a Swarm manager and the dokploy-network overlay. Fork CI's `validate` job
+// excludes the file for that reason and its `real-tests` job provides all three.
+// Everywhere else a missing prerequisite must skip the tests that need it and name
+// what would provide it, not fail them: an incomplete host is not a defect in the
+// code under test. Verified 2026-09-21 with all three present: 5 pass, 1 skipped.
 const hasNixpacks = await execAsync("command -v nixpacks")
 	.then(() => true)
 	.catch(() => false);
@@ -20,15 +22,28 @@ const hasSwarm = await execAsync(
 )
 	.then(({ stdout }) => stdout.trim() === "active")
 	.catch(() => false);
+// Every deployment here ends in mechanizeDockerContainer, which attaches the
+// service to dokploy-network. Without it the build succeeds and the deploy fails
+// with "network dokploy-network not found", whatever the build type.
+const hasDokployNetwork = await execAsync(
+	"docker network inspect dokploy-network",
+)
+	.then(() => true)
+	.catch(() => false);
+const canDeploy = hasSwarm && hasDokployNetwork;
 
 if (!hasNixpacks) {
 	console.warn(
-		"skipping the nixpacks deployments: nixpacks is not on PATH (https://nixpacks.com/docs/install)",
+		"skipping the nixpacks deployments: nixpacks is not on PATH (VERSION=1.41.0 https://nixpacks.com/install.sh)",
 	);
 }
 if (!hasSwarm) {
 	console.warn(
-		"skipping the Dockerfile deployment: this Docker daemon is not a swarm manager (docker swarm init)",
+		"skipping the deployments: this Docker daemon is not a swarm manager (docker swarm init)",
+	);
+} else if (!hasDokployNetwork) {
+	console.warn(
+		"skipping the deployments: dokploy-network is missing (docker network create --driver overlay --attachable dokploy-network)",
 	);
 }
 
@@ -169,6 +184,10 @@ const createMockDeployment = async (appName: string) => {
 
 async function cleanupDocker(appName: string) {
 	try {
+		// A deployment ends as a Swarm service, not a container, so removing the
+		// container leaves the service running and holding dokploy-network. Each
+		// run used to leak one per deployed test.
+		await execAsync(`docker service rm ${appName} 2>/dev/null || true`);
 		await execAsync(`docker stop ${appName} 2>/dev/null || true`);
 		await execAsync(`docker rm ${appName} 2>/dev/null || true`);
 		await execAsync(`docker rmi ${appName} 2>/dev/null || true`);
@@ -260,7 +279,7 @@ describe(
 			console.log("✅ Cleanup completed\n");
 		});
 
-		it.skipIf(!hasNixpacks)(
+		it.skipIf(!hasNixpacks || !canDeploy)(
 			"should REALLY clone git repo and build with nixpacks",
 			async () => {
 				console.log(`\n🚀 Testing real deployment with app: ${currentAppName}`);
@@ -388,7 +407,7 @@ describe(
 			REAL_TEST_TIMEOUT,
 		);
 
-		it.skipIf(!hasNixpacks)(
+		it.skipIf(!hasNixpacks || !canDeploy)(
 			"should REALLY clone with submodules when enabled",
 			async () => {
 				const submodulesAppName = `real-submodules-${Date.now()}`;
@@ -433,7 +452,7 @@ describe(
 			REAL_TEST_TIMEOUT,
 		);
 
-		it.skipIf(!hasNixpacks)(
+		it.skipIf(!hasNixpacks || !canDeploy)(
 			"should verify REAL commit info extraction",
 			async () => {
 				console.log(`\n🚀 Testing real commit info: ${currentAppName}`);
@@ -461,7 +480,7 @@ describe(
 			REAL_TEST_TIMEOUT,
 		);
 
-		it.skipIf(!hasSwarm)(
+		it.skipIf(!canDeploy)(
 			"should REALLY build with Dockerfile",
 			async () => {
 				const dockerfileAppName = `real-dockerfile-${Date.now()}`;
