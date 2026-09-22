@@ -6,6 +6,7 @@ import {
 	writeAppTraefikConfig,
 	writeTraefikConfigRemote,
 } from "./application";
+import { assertNoIngressServers } from "./domain";
 import type { FileConfig } from "./file-types";
 import {
 	addMiddleware,
@@ -49,6 +50,7 @@ export const createRedirectMiddleware = async (
 	application: ApplicationNested,
 	data: Redirect,
 ) => {
+	assertNoIngressServers(application);
 	const { appName, serverId } = application;
 
 	let config: FileConfig;

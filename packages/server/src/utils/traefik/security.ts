@@ -7,6 +7,7 @@ import {
 	writeAppTraefikConfig,
 	writeTraefikConfigRemote,
 } from "./application";
+import { assertNoIngressServers } from "./domain";
 import type {
 	BasicAuthMiddleware,
 	FileConfig,
@@ -24,6 +25,7 @@ export const createSecurityMiddleware = async (
 	application: ApplicationNested,
 	data: Security,
 ) => {
+	assertNoIngressServers(application);
 	const { appName, serverId } = application;
 	let config: FileConfig;
 

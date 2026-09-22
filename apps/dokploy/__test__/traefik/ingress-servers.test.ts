@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { ApplicationNested, Domain, FileConfig } from "@dokploy/server";
-import { ingressTargets, manageDomain, removeDomain } from "@dokploy/server";
+import {
+	assertIngressServersShareSwarm,
+	createSecurityMiddleware,
+	ingressTargets,
+	manageDomain,
+	removeDomain,
+} from "@dokploy/server";
 import { beforeEach, expect, test, vi } from "vitest";
 import { parse } from "yaml";
 
@@ -14,6 +20,15 @@ const dynamicPath = fs.mkdtempSync(
 // in memory and key them by serverId so a write to one can never be mistaken for
 // a write to another.
 const remoteFiles = new Map<string, string>();
+
+// Swarm membership as each server reports it. server-other answers with a node id
+// that server-primary, the manager, has never heard of.
+const nodeIds: Record<string, string> = {
+	"server-a": "node-a",
+	"server-other": "node-elsewhere",
+	"server-no-swarm": "",
+};
+const primarySwarmNodes = new Set(["node-primary", "node-a"]);
 
 vi.mock("@dokploy/server/constants", async (importOriginal) => {
 	const actual =
@@ -35,6 +50,21 @@ vi.mock("@dokploy/server/utils/process/execAsync", () => ({
 			// A real host always has middlewares.yml, so an absent file reads as an
 			// empty document, never as an empty string that parses to null.
 			return { stdout: remoteFiles.get(`${serverId}:${match[1]}`) ?? "{}" };
+		}
+		if (command.startsWith("docker info")) {
+			return { stdout: `${nodeIds[serverId] ?? ""}\n`, stderr: "" };
+		}
+		const inspected = command.match(/^docker node inspect (\S+)/);
+		if (inspected) {
+			if (
+				serverId !== "server-primary" ||
+				!primarySwarmNodes.has(inspected[1] ?? "")
+			) {
+				throw new Error(
+					`Error response from daemon: node ${inspected[1]} not found`,
+				);
+			}
+			return { stdout: JSON.stringify({ ID: inspected[1] }), stderr: "" };
 		}
 		const removed = command.match(/^rm -f (\S+)/);
 		if (removed) {
@@ -190,4 +220,56 @@ test("a disabled domain gets no router on any ingress server", async () => {
 	for (const serverId of ["server-primary", "server-a"]) {
 		expect(routeFile(serverId)?.http?.routers, serverId).toBe(undefined);
 	}
+});
+
+test("the view of one ingress server cannot reach the others", async () => {
+	const app = application(["server-a", "server-b"]);
+	await manageDomain(app, domain(1));
+
+	const viewOfA = ingressTargets(app)[1] as ApplicationNested;
+	await removeDomain(viewOfA, 1);
+
+	expect(routeFile("server-a")).toBe(undefined);
+	expect(
+		routeFile("server-b")?.http?.routers?.["harness-staging-router-1"],
+	).toBeDefined();
+	expect(
+		routeFile("server-primary")?.http?.routers?.["harness-staging-router-1"],
+	).toBeDefined();
+});
+
+test("basic auth and redirects are refused when there are ingress servers", async () => {
+	const withAuth = {
+		...application(["server-a"]),
+		security: [{ username: "u", password: "p" }],
+	} as unknown as ApplicationNested;
+
+	await expect(manageDomain(withAuth, domain(1))).rejects.toThrow(
+		/basic auth and redirects are published only to the server it runs on/,
+	);
+	// Adding auth later does not pass through manageDomain, so its writer checks too.
+	await expect(
+		createSecurityMiddleware(application(["server-a"]), {
+			username: "u",
+			password: "p",
+		} as never),
+	).rejects.toThrow(/has ingress servers/);
+	await expect(
+		manageDomain(
+			{ ...withAuth, ingressServerIds: [] } as ApplicationNested,
+			domain(1),
+		),
+	).resolves.toBeUndefined();
+});
+
+test("an ingress server must be a node in the application's swarm", async () => {
+	await expect(
+		assertIngressServersShareSwarm("server-primary", ["server-a"]),
+	).resolves.toBeUndefined();
+	await expect(
+		assertIngressServersShareSwarm("server-primary", ["server-other"]),
+	).rejects.toThrow(/not a node in the application's swarm/);
+	await expect(
+		assertIngressServersShareSwarm("server-primary", ["server-no-swarm"]),
+	).rejects.toThrow(/not part of a swarm/);
 });

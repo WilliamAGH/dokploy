@@ -28,25 +28,36 @@ export const ingressTargets = (app: ApplicationNested): ApplicationNested[] => {
 	const extra = [...new Set(app.ingressServerIds ?? [])].filter(
 		(serverId) => serverId && serverId !== app.serverId,
 	);
-	return [app, ...extra.map((serverId) => ({ ...app, serverId }))];
+	// The view of one server carries no ingress list of its own. Without this,
+	// removeDomain(view of A) would expand targets again and take B's routes with
+	// it.
+	return [
+		app,
+		...extra.map((serverId) => ({ ...app, serverId, ingressServerIds: [] })),
+	];
 };
 
 /**
- * A router-local certificate resolver and multiple ingress servers are an
- * unsupported combination, refused here rather than rendered into something that
- * silently fails. Traefik is explicit that several instances cannot share Let's
- * Encrypt: nothing routes a challenge to the instance that started it, and the KV
- * store that once did was dropped in 2.0 (certificate-resolvers/acme.md). Under
- * the round-robin DNS this feature exists for, the challenge for ANY of those
- * instances lands on whichever one DNS picked, so disabling the resolver on the
- * extra hosts would not rescue the first one either. Multi-ingress HTTPS takes a
- * certificate installed on each target (certificates create --serverId), which is
- * what the hand-written ingress files already do.
+ * Refuses the two combinations multiple ingress servers cannot serve correctly,
+ * rather than rendering something that silently fails. Checking here covers every
+ * caller: domain create, update, enable, forward-auth, and an application update
+ * that adds an ingress server.
  *
- * Refusing in manageDomain covers every caller: domain create, update, enable,
- * forward-auth, and an application update that adds an ingress server.
+ * A router-local certificate resolver. Traefik is explicit that several instances
+ * cannot share Let's Encrypt: nothing routes a challenge to the instance that
+ * started it, and the KV store that once did was dropped in 2.0
+ * (certificate-resolvers/acme.md). Under round-robin DNS the challenge for ANY of
+ * them lands on whichever instance DNS picked, so keeping the resolver on one host
+ * rescues none. Multi-ingress HTTPS takes a certificate installed on each server
+ * (certificates create --serverId).
+ *
+ * Basic auth or redirects. Their middlewares are written only to the server the
+ * application runs on, and Traefik fails a router whose middleware is missing
+ * rather than skipping it. The security writer also appends a freshly hashed user
+ * on every call, so it cannot simply be replayed on each ingress server.
  */
-const assertResolverIsSingleInstance = (
+const assertMultiIngressSupported = (
+	app: ApplicationNested,
 	domain: Domain,
 	targetCount: number,
 ) => {
@@ -59,19 +70,34 @@ const assertResolverIsSingleInstance = (
 			: domain.certificateType === "custom"
 				? domain.customCertResolver
 				: null;
-	if (!resolver) {
-		return;
+	if (resolver) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: `Domain ${domain.host} uses certificate resolver "${resolver}", which cannot be shared by the ${targetCount} Traefik instances serving this application. Install a certificate on each ingress server and set the domain's certificate type to none.`,
+		});
 	}
-	throw new TRPCError({
+	if (app.security.length > 0 || app.redirects.length > 0) {
+		throw ingressMiddlewareUnsupported(app);
+	}
+};
+
+const ingressMiddlewareUnsupported = (app: ApplicationNested) =>
+	new TRPCError({
 		code: "BAD_REQUEST",
-		message: `Domain ${domain.host} uses certificate resolver "${resolver}", which cannot be shared by the ${targetCount} Traefik instances serving this application. Install a certificate on each ingress server and set the domain's certificate type to none.`,
+		message: `Application ${app.appName} has ingress servers, and basic auth and redirects are published only to the server it runs on. Remove its ingress servers, or its basic auth and redirects.`,
 	});
+
+/** Called by the basic-auth and redirect writers, which do not pass through manageDomain. */
+export const assertNoIngressServers = (app: ApplicationNested) => {
+	if (ingressTargets(app).length > 1) {
+		throw ingressMiddlewareUnsupported(app);
+	}
 };
 
 export const manageDomain = async (app: ApplicationNested, domain: Domain) => {
 	const targets = ingressTargets(app);
 	if (domain.enabled) {
-		assertResolverIsSingleInstance(domain, targets.length);
+		assertMultiIngressSupported(app, domain, targets.length);
 	}
 	for (const target of targets) {
 		await manageDomainOnServer(target, domain);

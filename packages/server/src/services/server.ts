@@ -6,9 +6,11 @@ import {
 	server,
 } from "@dokploy/server/db/schema";
 import { hasValidLicense } from "@dokploy/server/services/proprietary/license-key";
+import { execAsyncRemote } from "@dokploy/server/utils/process/execAsync";
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import type { z } from "zod";
+import { getNodeInfo } from "./docker";
 
 export type Server = typeof server.$inferSelect;
 
@@ -285,4 +287,41 @@ export const getAccessibleServerIds = async (session: {
 	}
 
 	return new Set(memberRecord?.accessedServers ?? []);
+};
+
+/**
+ * An ingress server forwards to the application's Swarm service by its VIP name,
+ * so it only works from inside that same Swarm. A server in another Swarm renders
+ * valid YAML and then fails to resolve — or, worse, resolves a same-named service
+ * belonging to that other Swarm and forwards to the wrong workload. Ask each
+ * candidate for its node id, then ask the application's own server, which is a
+ * manager, whether it knows that node.
+ *
+ * Scheduling availability is deliberately not checked: a Drain node runs no tasks
+ * but still runs its standalone Traefik, which is exactly the intended shape.
+ */
+export const assertIngressServersShareSwarm = async (
+	applicationServerId: string | null,
+	ingressServerIds: string[],
+) => {
+	const nodeIdCommand = 'docker info --format "{{.Swarm.NodeID}}"';
+	for (const serverId of ingressServerIds) {
+		if (serverId === applicationServerId) {
+			continue;
+		}
+		const { stdout } = await execAsyncRemote(serverId, nodeIdCommand);
+		const nodeId = stdout.trim();
+		if (!nodeId) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: `Ingress server ${serverId} is not part of a swarm. Run Setup Server on it and join it to the application's swarm.`,
+			});
+		}
+		if (!(await getNodeInfo(nodeId, applicationServerId ?? undefined))) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: `Ingress server ${serverId} is not a node in the application's swarm, so it cannot reach the service by its VIP.`,
+			});
+		}
+	}
 };

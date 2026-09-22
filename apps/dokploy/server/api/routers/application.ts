@@ -1,4 +1,5 @@
 import {
+	assertIngressServersShareSwarm,
 	clearOldDeployments,
 	createApplication,
 	createDeploymentSubmission,
@@ -15,6 +16,7 @@ import {
 	getGitCommitInfo,
 	getWebServerSettings,
 	IS_CLOUD,
+	ingressTargets,
 	mechanizeDockerContainer,
 	readConfig,
 	readRemoteConfig,
@@ -408,13 +410,12 @@ export const applicationRouter = createTRPCRouter({
 					await removeTraefikConfig(application.appName, application.serverId),
 				// Each ingress server holds its own copy of this application's routes
 				// and middlewares, cleaned exactly as the server it runs on is.
-				...(application.ingressServerIds ?? [])
-					.filter((serverId) => serverId !== application.serverId)
-					.flatMap((serverId) => [
+				...ingressTargets(application)
+					.slice(1)
+					.flatMap((target) => [
+						async () => await deleteAllMiddlewares(target),
 						async () =>
-							await deleteAllMiddlewares({ ...application, serverId }),
-						async () =>
-							await removeTraefikConfig(application.appName, serverId),
+							await removeTraefikConfig(application.appName, target.serverId),
 					]),
 				async () =>
 					await removeService(application?.appName, application.serverId),
@@ -879,6 +880,11 @@ export const applicationRouter = createTRPCRouter({
 						});
 					}
 				}
+				const application = await findApplicationById(input.applicationId);
+				await assertIngressServersShareSwarm(
+					application.serverId,
+					input.ingressServerIds,
+				);
 			}
 
 			const {
