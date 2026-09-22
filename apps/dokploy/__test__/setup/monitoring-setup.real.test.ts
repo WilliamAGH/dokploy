@@ -10,8 +10,11 @@ const TEST_IMAGE = "busybox:latest";
 // Mock ONLY db-backed lookups and remote I/O. Dockerode stays real and talks to
 // the local daemon, so the legacy-container cleanup is exercised for real.
 vi.mock("@dokploy/server/services/server", () => ({
+	findServersByOrganizationId: vi.fn().mockResolvedValue([]),
 	findServerById: vi.fn().mockResolvedValue({
 		serverId: "test-server",
+		name: "test-server",
+		organizationId: "test-org",
 		serverType: "deploy",
 		sshKeyId: null, // -> getRemoteDocker returns the local docker instance
 		metricsConfig: {
@@ -43,6 +46,31 @@ vi.mock("@dokploy/server/utils/process/execAsync", () => ({
 	execAsync: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
 	execAsyncRemote: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
 }));
+
+// setupMonitoring skips the control plane's own node, which setupWebMonitoring
+// owns. This suite has one daemon, so the server under test and the control plane
+// would be the same node and nothing would run. Report the control plane (the
+// no-argument getRemoteDocker) as a different node; every server-scoped call
+// still gets the real local daemon.
+const controlPlane = vi.hoisted(() => ({
+	docker: {
+		info: async () => ({ Swarm: { NodeID: "control-plane-node-under-test" } }),
+	},
+}));
+
+vi.mock("@dokploy/server/utils/servers/remote-docker", async () => {
+	const { docker } = await import("@dokploy/server/constants");
+	return {
+		getRemoteDocker: vi.fn(async (serverId?: string | null) =>
+			serverId ? docker : controlPlane.docker,
+		),
+	};
+});
+
+// Since agents became per node, a remote server's service is named after the
+// Swarm node it monitors. The bare name is only the legacy container's.
+const nodeServiceName = async () =>
+	`${SERVICE_NAME}-${((await docker.info()) as { Swarm: { NodeID: string } }).Swarm.NodeID}`;
 
 const containerExists = async (name: string) => {
 	try {
@@ -87,9 +115,11 @@ const swarmTaskNames = async () => {
 };
 
 const cleanup = async () => {
-	try {
-		await docker.getService(SERVICE_NAME).remove();
-	} catch {}
+	for (const name of [SERVICE_NAME, await nodeServiceName()]) {
+		try {
+			await docker.getService(name).remove();
+		} catch {}
+	}
 	try {
 		await docker.getContainer(SERVICE_NAME).remove({ force: true });
 	} catch {}
@@ -184,7 +214,7 @@ describe.skipIf(!hasDocker() || hasRealMonitoring() || !process.env.CI)(
 				await setupMonitoring("test-server");
 
 				expect(await containerExists(SERVICE_NAME)).toBe(false);
-				expect(await serviceExists(SERVICE_NAME)).toBe(true);
+				expect(await serviceExists(await nodeServiceName())).toBe(true);
 			},
 			REAL_TEST_TIMEOUT,
 		);
@@ -217,10 +247,10 @@ describe.skipIf(!hasDocker() || hasRealMonitoring() || !process.env.CI)(
 				expect(await containerExists(SERVICE_NAME)).toBe(false);
 
 				await expect(setupMonitoring("test-server")).resolves.not.toThrow();
-				await waitForServiceConvergence(SERVICE_NAME);
+				await waitForServiceConvergence(await nodeServiceName());
 				await expect(setupMonitoring("test-server")).resolves.not.toThrow();
 
-				expect(await serviceExists(SERVICE_NAME)).toBe(true);
+				expect(await serviceExists(await nodeServiceName())).toBe(true);
 			},
 			REAL_TEST_TIMEOUT,
 		);
@@ -236,23 +266,26 @@ describe.skipIf(!hasDocker() || hasRealMonitoring() || !process.env.CI)(
 							throw error;
 						},
 					}),
+					info: docker.info.bind(docker),
+					listNodes: docker.listNodes.bind(docker),
 					getService: docker.getService.bind(docker),
 					createService: docker.createService.bind(docker),
 				};
 
-				const remoteDocker = await import(
+				const { getRemoteDocker } = await import(
 					"@dokploy/server/utils/servers/remote-docker"
 				);
-				const spy = vi
-					.spyOn(remoteDocker, "getRemoteDocker")
-					.mockResolvedValue(failingDocker as any);
+				const mocked = vi.mocked(getRemoteDocker);
+				const original = mocked.getMockImplementation();
+				mocked.mockImplementation((async (serverId?: string | null) =>
+					serverId ? failingDocker : controlPlane.docker) as never);
 
 				try {
 					await expect(setupMonitoring("test-server")).resolves.not.toThrow();
-					expect(spy).toHaveBeenCalled(); // guards against the spy silently not intercepting
-					expect(await serviceExists(SERVICE_NAME)).toBe(true);
+					expect(mocked).toHaveBeenCalledWith("test-server"); // guards against the mock silently not intercepting
+					expect(await serviceExists(await nodeServiceName())).toBe(true);
 				} finally {
-					spy.mockRestore();
+					mocked.mockImplementation(original as never);
 				}
 			},
 			REAL_TEST_TIMEOUT,
