@@ -43,13 +43,13 @@ export const ingressTargets = (app: ApplicationNested): ApplicationNested[] => {
  * caller: domain create, update, enable, forward-auth, and an application update
  * that adds an ingress server.
  *
- * A router-local certificate resolver. Traefik is explicit that several instances
- * cannot share Let's Encrypt: nothing routes a challenge to the instance that
- * started it, and the KV store that once did was dropped in 2.0
+ * The built-in `letsencrypt` resolver. Dokploy's setup configures it as an
+ * HTTP-01 challenge, and Traefik is explicit that several instances cannot share
+ * that: nothing routes a challenge to the instance that started it
  * (certificate-resolvers/acme.md). Under round-robin DNS the challenge for ANY of
- * them lands on whichever instance DNS picked, so keeping the resolver on one host
- * rescues none. Multi-ingress HTTPS takes a certificate installed on each server
- * (certificates create --serverId).
+ * them lands on whichever instance DNS picked. A DNS-01 resolver answers through
+ * the zone instead, so each instance issues and renews on its own: use one as a
+ * `custom` resolver, or install a certificate on each server.
  *
  * Basic auth or redirects. Their middlewares are written only to the server the
  * application runs on, and Traefik fails a router whose middleware is missing
@@ -64,16 +64,10 @@ const assertMultiIngressSupported = (
 	if (targetCount < 2) {
 		return;
 	}
-	const resolver =
-		domain.certificateType === "letsencrypt"
-			? "letsencrypt"
-			: domain.certificateType === "custom"
-				? domain.customCertResolver
-				: null;
-	if (resolver) {
+	if (domain.certificateType === "letsencrypt") {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
-			message: `Domain ${domain.host} uses certificate resolver "${resolver}", which cannot be shared by the ${targetCount} Traefik instances serving this application. Install a certificate on each ingress server and set the domain's certificate type to none.`,
+			message: `Domain ${domain.host} uses the HTTP-01 "letsencrypt" resolver, which cannot be shared by the ${targetCount} Traefik instances serving this application. Use a DNS-01 resolver (certificate type custom), or install a certificate on each ingress server and set the certificate type to none.`,
 		});
 	}
 	if (app.security.length > 0 || app.redirects.length > 0) {

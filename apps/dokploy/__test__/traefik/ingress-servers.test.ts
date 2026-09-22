@@ -160,28 +160,33 @@ test("a domain is published to every ingress server, pointing at the same backen
 	}
 });
 
-test("a router-local certificate resolver is refused when there are ingress servers", async () => {
+test("the HTTP-01 resolver is refused when there are ingress servers, a DNS-01 one is not", async () => {
 	const letsencrypt = {
 		...domain(1),
 		https: true,
 		certificateType: "letsencrypt" as const,
 	};
 
-	// One instance is fine. Several cannot share a resolver, and rendering it
-	// anyway would fail the challenge on whichever host DNS picked.
+	// One instance is fine. Several cannot share HTTP-01, and rendering it anyway
+	// would fail the challenge on whichever host DNS picked.
 	await expect(
 		manageDomain(application([]), letsencrypt),
 	).resolves.toBeUndefined();
 	await expect(
 		manageDomain(application(["server-a"]), letsencrypt),
 	).rejects.toThrow(/cannot be shared by the 2 Traefik instances/);
-	await expect(
-		manageDomain(application(["server-a"]), {
-			...letsencrypt,
-			certificateType: "custom",
-			customCertResolver: "porkbun",
-		}),
-	).rejects.toThrow(/"porkbun"/);
+	await manageDomain(application(["server-a"]), {
+		...letsencrypt,
+		certificateType: "custom",
+		customCertResolver: "cloudflare",
+	});
+	for (const serverId of ["server-primary", "server-a"]) {
+		expect(
+			routeFile(serverId)?.http?.routers?.["harness-staging-router-websecure-1"]
+				?.tls,
+			serverId,
+		).toEqual({ certResolver: "cloudflare" });
+	}
 });
 
 test("removing a domain removes it from every ingress server", async () => {
