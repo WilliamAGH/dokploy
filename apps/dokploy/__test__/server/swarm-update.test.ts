@@ -1018,7 +1018,7 @@ describe("waitForSwarmServiceUpdate", () => {
 		expect(sleepFn).toHaveBeenCalledWith(1);
 	});
 
-	it("waits for a start-first predecessor to finish draining", async () => {
+	it("waits for a predecessor Swarm still wants running", async () => {
 		const operationId = "deployment-id";
 		const operation = {
 			Spec: {
@@ -1073,6 +1073,58 @@ describe("waitForSwarmServiceUpdate", () => {
 			),
 		).resolves.toBeUndefined();
 		expect(docker.listTasks).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not wait for a start-first predecessor that is draining", async () => {
+		const operationId = "deployment-id";
+		const operation = {
+			Spec: {
+				TaskTemplate: {
+					ContainerSpec: {
+						Labels: { [DEPLOYMENT_ID_LABEL]: operationId },
+					},
+					ForceUpdate: 4,
+				},
+			},
+			UpdateStatus: { State: "completed", StartedAt: "operation-1" },
+			Version: { Index: 11 },
+		};
+		const swarmService = service([operation, operation]);
+		const predecessor = {
+			...task("running", 3, "previous-id"),
+			DesiredState: "shutdown",
+			ID: "previous",
+			Slot: 1,
+		};
+		const candidate = {
+			...task("running", 4, operationId),
+			ID: "candidate",
+			Slot: 1,
+		};
+		const docker = {
+			listTasks: vi.fn().mockResolvedValueOnce([candidate, predecessor]),
+		} as unknown as DockerClient;
+		let now = 0;
+
+		await expect(
+			waitForSwarmServiceUpdate(
+				docker,
+				swarmService as unknown as DockerService,
+				{
+					expectedForceUpdate: 4,
+					expectedOperationId: operationId,
+					expectedTaskCount: 1,
+					nowFn: () => now,
+					pollIntervalMs: 1,
+					previousVersion: 10,
+					sleepFn: async (milliseconds) => {
+						now += milliseconds;
+					},
+					timeoutMs: 10,
+				},
+			),
+		).resolves.toBeUndefined();
+		expect(docker.listTasks).toHaveBeenCalledTimes(1);
 	});
 });
 

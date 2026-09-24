@@ -151,10 +151,14 @@ export const getExpectedTasks = async (
 	const active = matching.filter(
 		(task) => !retiredTaskStates.has(task.DesiredState ?? ""),
 	);
+	// A predecessor Swarm has already told to stop is draining, not serving new
+	// work: the candidate tasks already carry the rollout, so its stop grace
+	// period must not hold the deployment (and the serial queue behind it).
 	return {
 		hasActivePredecessor: serviceTasks.some(
 			(task) =>
 				!taskMatchesOperation(task, operation) &&
+				!retiredTaskStates.has(task.DesiredState ?? "") &&
 				!terminalTaskStates.has(task.Status?.State ?? ""),
 		),
 		tasks: [
