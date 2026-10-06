@@ -23,19 +23,24 @@ const hostKey = utils.generateKeyPairSync("ed25519");
 const clientKey = utils.generateKeyPairSync("ed25519");
 let connections = 0;
 let refuseNextSession = false;
+let sessionDelayMs = 0;
 const execs: string[] = [];
 const stdins: string[] = [];
 const clients = new Set<Connection>();
 
-const runScript = (script: string, channel: ServerChannel) => {
-	const bash = spawn("bash", [], { stdio: ["pipe", "pipe", "pipe"] });
-	bash.stdout.pipe(channel, { end: false });
-	bash.stderr.pipe(channel.stderr, { end: false });
-	bash.on("close", (code) => {
+// Runs the exec request text through a shell, as sshd does, feeding it the bytes
+// the client sent on stdin.
+const runExec = (command: string, stdin: string, channel: ServerChannel) => {
+	const shell = spawn("sh", ["-c", command], {
+		stdio: ["pipe", "pipe", "pipe"],
+	});
+	shell.stdout.pipe(channel, { end: false });
+	shell.stderr.pipe(channel.stderr, { end: false });
+	shell.on("close", (code) => {
 		channel.exit(code ?? 1);
 		channel.end();
 	});
-	bash.stdin.end(script);
+	shell.stdin.end(stdin);
 };
 
 const answerPing = (channel: ServerChannel) => {
@@ -54,12 +59,14 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 	client.on("close", () => clients.delete(client));
 	client.on("authentication", (ctx) => ctx.accept());
 	client.on("ready", () => {
-		client.on("session", (accept, reject) => {
+		client.on("session", async (accept, reject) => {
 			if (refuseNextSession) {
 				refuseNextSession = false;
 				reject();
 				return;
 			}
+			if (sessionDelayMs)
+				await new Promise((resolve) => setTimeout(resolve, sessionDelayMs));
 			accept().on("exec", (acceptExec, _reject, info) => {
 				const channel = acceptExec();
 				execs.push(info.command);
@@ -73,7 +80,7 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 				});
 				channel.on("end", () => {
 					stdins.push(stdin);
-					runScript(stdin, channel);
+					runExec(info.command, stdin, channel);
 				});
 			});
 		});
@@ -166,6 +173,24 @@ describe("getRemoteDocker over a pooled SSH connection", () => {
 		}
 		expect(connections - before).toBe(1);
 	});
+
+	it("frees the slot of a request aborted before its channel opened", async () => {
+		const docker = await getRemoteDocker("srv-abort");
+		await docker.ping();
+		const before = connections;
+		sessionDelayMs = 300;
+		const aborted = await Promise.allSettled(
+			Array.from({ length: 8 }, () =>
+				docker.listContainers({ abortSignal: AbortSignal.timeout(50) }),
+			),
+		);
+		sessionDelayMs = 0;
+		expect(aborted.every((r) => r.status === "rejected")).toBe(true);
+		// Let the delayed channels open and be torn down.
+		await new Promise((resolve) => setTimeout(resolve, 800));
+		await Promise.all(Array.from({ length: 8 }, () => docker.ping()));
+		expect(connections - before).toBe(0);
+	});
 });
 
 describe("execAsync on the local host", () => {
@@ -173,7 +198,7 @@ describe("execAsync on the local host", () => {
 		const { stdout } = await execAsync(
 			`tr '\\0' ' ' < /proc/$$/cmdline; echo; : ${MARKER}`,
 		);
-		expect(stdout).toMatch(/^\/bin\/sh \S+script\.sh/);
+		expect(stdout).toMatch(/^\/bin\/sh -c eval/);
 		expect(stdout).not.toContain(MARKER);
 	});
 

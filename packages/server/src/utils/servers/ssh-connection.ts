@@ -4,16 +4,19 @@ import type { Duplex } from "node:stream";
 import { Client, type ClientChannel } from "ssh2";
 
 // OpenSSH's default MaxSessions allows 10 channels per connection; stay under it.
+// Every fleet server measured 10 or more on 2026-10-06.
 const MAX_CHANNELS_PER_CONNECTION = 8;
 // A connection with no open channel closes after this, so idle servers hold no session.
 const IDLE_CLOSE_MS = 30_000;
 
 /**
- * Wraps a command sent to a server. The script itself travels on the channel's
- * stdin into a 0600 temp file, so its text, including any inline credentials,
- * never appears in a process's arguments on the server.
+ * Runs the script that arrives on the channel's stdin. bash reads it through a
+ * pipe (`/dev/fd/63`), so its text, including any inline credentials, never
+ * appears in a process's arguments or on disk, and a full disk cannot stop a
+ * cleanup script. The outer `exec bash -c` keeps this independent of the
+ * user's login shell.
  */
-export const REMOTE_SCRIPT_RUNNER = `f=$(mktemp) && trap 'rm -f "$f"' EXIT && cat > "$f" && bash "$f" < /dev/null`;
+export const REMOTE_SCRIPT_RUNNER = `exec bash -c 'bash <(cat) < /dev/null'`;
 
 export interface SshTarget {
 	serverId: string;
@@ -75,6 +78,13 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 	return entry;
 };
 
+// Ending a connection makes it unwritable at once, while its `close` arrives a
+// round trip later; marking it closed first keeps new channels off it.
+const retire = (entry: PooledConnection) => {
+	entry.closed = true;
+	if (entry.channels === 0) entry.client.end();
+};
+
 const acquire = (target: SshTarget) => {
 	const key = poolKey(target);
 	const list = pools.get(key) ?? [];
@@ -96,7 +106,7 @@ const acquire = (target: SshTarget) => {
 		if (held.channels > 0) return;
 		if (held.closed) held.client.end();
 		else {
-			held.idleTimer = setTimeout(() => held.client.end(), IDLE_CLOSE_MS);
+			held.idleTimer = setTimeout(() => retire(held), IDLE_CLOSE_MS);
 			held.idleTimer.unref();
 		}
 	};
@@ -120,19 +130,24 @@ const execOnce = async (target: SshTarget, command: string) => {
 		throw error;
 	}
 	return new Promise<ClientChannel>((resolve, reject) => {
-		entry.client.exec(command, (err, channel) => {
-			if (err) {
-				release();
-				if (isChannelRefusal(err)) {
-					entry.closed = true;
-					if (entry.channels === 0) entry.client.end();
+		const refuse = (error: Error) => {
+			release();
+			if (isChannelRefusal(error)) retire(entry);
+			reject(error);
+		};
+		try {
+			entry.client.exec(command, (err, channel) => {
+				if (err) {
+					refuse(err);
+					return;
 				}
-				reject(err);
-				return;
-			}
-			channel.once("close", release);
-			resolve(channel);
-		});
+				channel.once("close", release);
+				resolve(channel);
+			});
+		} catch (error) {
+			// ssh2 throws "Not connected" synchronously once the socket stops being writable.
+			refuse(error as Error);
+		}
 	});
 };
 
@@ -168,7 +183,17 @@ export class PooledDockerAgent extends http.Agent {
 		callback?: (err: Error | null, stream: Duplex) => void,
 	): Duplex | null | undefined {
 		openExecChannel(this.target, "docker system dial-stdio").then(
-			(channel) => callback?.(null, channel),
+			(channel) => {
+				// A request aborted before its channel opened gets the channel destroyed
+				// unread. ssh2 emits `close`, which frees the pool slot, only after the
+				// readable side ends, so drain it on destroy.
+				const destroy = channel.destroy.bind(channel);
+				channel.destroy = () => {
+					channel.resume();
+					return destroy();
+				};
+				callback?.(null, channel);
+			},
 			// Node's Agent ignores the stream when err is set (net.createConnection
 			// passes none); @types/node still types it as required.
 			(error: Error) => callback?.(error, undefined as unknown as Duplex),

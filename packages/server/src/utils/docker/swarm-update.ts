@@ -43,8 +43,8 @@ const failedUpdateStates = new Set([
 ]);
 
 // One lost SSH handshake to a remote Docker host is transport noise, not a
-// deployment result: docker-modem opens a fresh ssh2 connection per API call
-// with no retry, so a single stalled connect would otherwise abort a deploy
+// deployment result: a request's pooled SSH connection can die before its
+// channel opens, so a single stalled connect would otherwise abort a deploy
 // whose service.update Swarm already accepted. Retry only this read; mutations
 // keep their own reinspect-and-reconcile paths.
 const inspectService = (

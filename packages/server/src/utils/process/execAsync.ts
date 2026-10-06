@@ -1,8 +1,5 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import util from "node:util";
+import { execFile, spawn } from "node:child_process";
+import type { Writable } from "node:stream";
 import { findServerById } from "@dokploy/server/services/server";
 import { Client, type ClientChannel } from "ssh2";
 import {
@@ -28,125 +25,85 @@ export class WriteFileRemoteError extends Error {
 // Re-export ExecError for easier imports
 export { ExecError } from "./ExecError";
 
-const execFileBase = util.promisify(execFile);
-
-// The shell runs the command from a 0600 file, so its text, including inline
-// credentials, never appears in a process's arguments or in Node's error message.
-const withScriptFile = async <T>(
-	command: string,
-	run: (file: string) => Promise<T>,
-): Promise<T> => {
-	const dir = await mkdtemp(join(tmpdir(), "dokploy-exec-"));
-	const file = join(dir, "script.sh");
-	try {
-		await writeFile(file, command, { mode: 0o600 });
-		return await run(file);
-	} finally {
-		await rm(dir, { recursive: true, force: true });
-	}
-};
-
-export const execAsync = async (
-	command: string,
-	options?: { cwd?: string; env?: NodeJS.ProcessEnv; shell?: string },
-): Promise<{ stdout: string; stderr: string }> => {
-	try {
-		const result = await withScriptFile(command, (file) =>
-			execFileBase(options?.shell ?? "/bin/sh", [file], {
-				cwd: options?.cwd,
-				env: options?.env,
-			}),
-		);
-		return {
-			stdout: result.stdout.toString(),
-			stderr: result.stderr.toString(),
-		};
-	} catch (error) {
-		if (error instanceof Error) {
-			// @ts-expect-error - exec error has these properties
-			const exitCode = error.code;
-			// @ts-expect-error
-			const stdout = error.stdout?.toString() || "";
-			// @ts-expect-error
-			const stderr = error.stderr?.toString() || "";
-
-			throw new ExecError(`Command execution failed: ${error.message}`, {
-				command,
-				stdout,
-				stderr,
-				exitCode,
-				originalError: error,
-			});
-		}
-		throw error;
-	}
-};
-
 interface ExecOptions {
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
+	shell?: string;
 }
+
+// The shell reads the command from fd 3, so its text, including inline
+// credentials, never appears in a process's arguments, on disk, or in the error.
+// Node backs extra stdio with a socketpair, which /dev/fd/3 cannot open, so the
+// shell reads the descriptor directly.
+const READ_SCRIPT_FROM_FD3 = 'eval "$(cat <&3)"';
+
+const runShell = (
+	command: string,
+	options: ExecOptions,
+	onData?: (data: string) => void,
+): Promise<{ stdout: string; stderr: string }> =>
+	new Promise((resolve, reject) => {
+		let stdout = "";
+		let stderr = "";
+		const child = spawn(
+			options.shell ?? "/bin/sh",
+			["-c", READ_SCRIPT_FROM_FD3],
+			{
+				cwd: options.cwd,
+				env: options.env,
+				stdio: ["ignore", "pipe", "pipe", "pipe"],
+			},
+		);
+		child.stdout?.on("data", (data: Buffer) => {
+			stdout += data.toString();
+			onData?.(data.toString());
+		});
+		child.stderr?.on("data", (data: Buffer) => {
+			stderr += data.toString();
+			onData?.(data.toString());
+		});
+		child.on("error", (error) => {
+			reject(
+				new ExecError(`Command execution error: ${error.message}`, {
+					command,
+					stdout,
+					stderr,
+					originalError: error,
+				}),
+			);
+		});
+		child.on("close", (code) => {
+			if (code === 0) {
+				resolve({ stdout, stderr });
+				return;
+			}
+			reject(
+				new ExecError(
+					`Command execution failed: exit code ${code}${stderr ? `\n${stderr}` : ""}`,
+					{ command, stdout, stderr, exitCode: code ?? undefined },
+				),
+			);
+		});
+		const script = child.stdio[3] as Writable;
+		// A script that exits before reading all of itself closes the pipe; the
+		// exit status above reports the outcome, so EPIPE carries no information.
+		script.on("error", (error: NodeJS.ErrnoException) => {
+			if (error.code !== "EPIPE") child.kill();
+		});
+		script.end(command);
+	});
+
+export const execAsync = (
+	command: string,
+	options: ExecOptions = {},
+): Promise<{ stdout: string; stderr: string }> => runShell(command, options);
 
 export const execAsyncStream = (
 	command: string,
 	onData?: (data: string) => void,
-	options: ExecOptions = {},
-): Promise<{ stdout: string; stderr: string }> => {
-	return withScriptFile(
-		command,
-		(file) =>
-			new Promise((resolve, reject) => {
-				let stdoutComplete = "";
-				let stderrComplete = "";
-
-				const childProcess = execFile("/bin/sh", [file], options, (error) => {
-					if (error) {
-						reject(
-							new ExecError(`Command execution failed: ${error.message}`, {
-								command,
-								stdout: stdoutComplete,
-								stderr: stderrComplete,
-								// execFile reports a spawn failure as a string code; only a number is an exit status.
-								exitCode:
-									typeof error.code === "number" ? error.code : undefined,
-								originalError: error,
-							}),
-						);
-						return;
-					}
-					resolve({ stdout: stdoutComplete, stderr: stderrComplete });
-				});
-
-				childProcess.stdout?.on("data", (data: Buffer | string) => {
-					const stringData = data.toString();
-					stdoutComplete += stringData;
-					if (onData) {
-						onData(stringData);
-					}
-				});
-
-				childProcess.stderr?.on("data", (data: Buffer | string) => {
-					const stringData = data.toString();
-					stderrComplete += stringData;
-					if (onData) {
-						onData(stringData);
-					}
-				});
-
-				childProcess.on("error", (error) => {
-					console.log(error);
-					reject(
-						new ExecError(`Command execution error: ${error.message}`, {
-							command,
-							stdout: stdoutComplete,
-							stderr: stderrComplete,
-							originalError: error,
-						}),
-					);
-				});
-			}),
-	);
-};
+	options: Omit<ExecOptions, "shell"> = {},
+): Promise<{ stdout: string; stderr: string }> =>
+	runShell(command, options, onData);
 
 export const execFileAsync = async (
 	command: string,

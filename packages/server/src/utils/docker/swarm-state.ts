@@ -56,9 +56,9 @@ const TRANSIENT_TRANSPORT_RETRY_DELAYS_MS = [1_000, 3_000] as const;
 const delay = (milliseconds: number) =>
 	new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-// A remote Docker read runs over a per-request SSH connection (docker-modem opens
-// a fresh ssh2 client per API call, no retry). A single lost handshake or reset is
-// transport noise, not a Swarm result, and would otherwise fail a deployment whose
+// A remote Docker read runs over a channel on the server's pooled SSH connection
+// (utils/servers/ssh-connection). A lost handshake, reset, or a connection that died
+// before the channel opened is transport noise, not a Swarm result, and would otherwise fail a deployment whose
 // service.update Swarm already accepted. A Docker HTTP error carries a numeric
 // statusCode and is never retried here; only read-only calls use this helper, so a
 // retried call cannot replay a mutation.
@@ -73,7 +73,7 @@ export const isTransientTransportError = (error: unknown): boolean => {
 	if (code === "ECONNRESET" || code === "ETIMEDOUT" || code === "EPIPE")
 		return true;
 	const message = String((error as { message?: unknown }).message ?? error);
-	return /timed out while waiting for handshake|connection lost before handshake|no response from server|socket hang up/i.test(
+	return /timed out while waiting for handshake|connection lost before handshake|no response from server|not connected|channel open failure|socket hang up/i.test(
 		message,
 	);
 };
