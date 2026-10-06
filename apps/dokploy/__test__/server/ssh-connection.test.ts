@@ -179,8 +179,11 @@ describe("getRemoteDocker over a pooled SSH connection", () => {
 		await docker.ping();
 		const before = connections;
 		sessionDelayMs = 300;
+		// Seven, not eight: the warm-up ping's channel may still hold the eighth slot
+		// for a moment. Seven leaked slots would still push the next eight pings onto
+		// a second connection.
 		const aborted = await Promise.allSettled(
-			Array.from({ length: 8 }, () =>
+			Array.from({ length: 7 }, () =>
 				docker.listContainers({ abortSignal: AbortSignal.timeout(50) }),
 			),
 		);
