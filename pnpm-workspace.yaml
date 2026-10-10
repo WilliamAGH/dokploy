@@ -4,6 +4,43 @@ packages:
   - "apps/schedules"
   - "packages/server"
 
+virtualStoreType: global
+
+overrides:
+  '@types/react': 18.3.5
+  '@types/react-dom': 18.3.0
+  esbuild: 0.20.2
+  better-call: 1.3.7
+  '@better-fetch/fetch': 1.3.1
+
+peerDependencyRules:
+  ignoreMissing:
+    - prisma
+    - '@prisma/client'
+    - '@prisma/engines'
+    - '@electric-sql/pglite'
+    - typescript
+    - drizzle-kit
+
+allowBuilds:
+  '@prisma/client': false
+  '@prisma/engines': false
+  '@scarf/scarf': true
+  '@tree-sitter-grammars/tree-sitter-yaml': true
+  bcrypt: true
+  better-sqlite3: true
+  core-js-pure: true
+  cpu-features: true
+  esbuild: true
+  msgpackr-extract: true
+  node-pty: true
+  prisma: false
+  protobufjs: true
+  sharp: true
+  ssh2: true
+  tree-sitter: true
+  tree-sitter-json: true
+
 # Supply-chain hardening: refuse package versions younger than N days,
 # so newly-published malicious versions get caught/yanked before we install them.
 # Disabled for now — kept breaking builds on unrelated fresh transitive deps
