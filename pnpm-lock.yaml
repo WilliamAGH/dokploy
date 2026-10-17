@@ -112,6 +112,8 @@ overrides:
   better-call: 1.3.7
   '@better-fetch/fetch': 1.3.1
 
+packageExtensionsChecksum: sha256-MWNxHABHH3U/ETgzVx5pV+omHaS9aXSx8/Wm+qmZApU=
+
 importers:
 
   .:
@@ -10275,6 +10277,7 @@ snapshots:
 
   '@hookform/resolvers@5.2.2(react-hook-form@7.71.2(react@19.2.7))':
     dependencies:
+      '@standard-schema/spec': 1.1.0
       '@standard-schema/utils': 0.3.0
       react-hook-form: 7.71.2(react@19.2.7)
 

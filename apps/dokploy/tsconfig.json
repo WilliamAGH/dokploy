@@ -25,7 +25,14 @@
 		],
 		"incremental": true,
 		/* Path Aliases */
+		/* React types: libraries in pnpm's global virtual store cannot reach the
+		   app's @types/react by walking up, so their React imports would degrade
+		   to `any`. Every React import resolves to the one declared copy. */
 		"paths": {
+			"react": ["./node_modules/@types/react"],
+			"react/*": ["./node_modules/@types/react/*"],
+			"react-dom": ["./node_modules/@types/react-dom"],
+			"react-dom/*": ["./node_modules/@types/react-dom/*"],
 			"@/*": ["./*"],
 			"@dokploy/server/*": ["../../packages/server/src/*"]
 		}
