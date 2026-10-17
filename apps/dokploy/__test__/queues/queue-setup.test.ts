@@ -84,4 +84,36 @@ describe("deployment queue setup", () => {
 		expect(mocks.updateDeploymentStatus).not.toHaveBeenCalled();
 		mocks.release();
 	});
+
+	it("keeps a replaced job out when its retry arrives before its row is cancelled", async () => {
+		await flush();
+		mocks.updateDeploymentStatus.mockClear();
+		let finishCancel!: () => void;
+		mocks.updateDeploymentStatus.mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					finishCancel = resolve;
+				}),
+		);
+		await myQueue.add(appJob("busy"));
+		await flush();
+		await myQueue.add(appJob("stale"), "stale");
+		const replacing = myQueue.add(appJob("fresh"), "fresh");
+
+		const retry = await myQueue.add(appJob("stale"), "stale");
+
+		expect(retry).toEqual({ id: "stale" });
+		expect(
+			(await myQueue.getJobs(["waiting"])).map((job) => job.data.titleLog),
+		).toEqual(["fresh"]);
+		finishCancel();
+		await replacing;
+		expect(mocks.updateDeploymentStatus.mock.calls).toEqual([
+			["stale", "cancelled"],
+		]);
+
+		myQueue.clearWaiting();
+		mocks.release();
+		await flush();
+	});
 });

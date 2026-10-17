@@ -102,6 +102,8 @@ interface InternalJob {
 	state: JobState;
 	partition: string;
 	group: string;
+	/** The caller chose the id, so a retry can submit the same job again. */
+	callerId: boolean;
 }
 
 interface Partition {
@@ -127,6 +129,13 @@ export class InMemoryQueue {
 	private processor: Processor | null = null;
 	private running = false;
 	private seq = 0;
+	/**
+	 * Caller-chosen ids of waiting jobs a newer job or a clean removed. The caller
+	 * marks the removed job's deployment row cancelled only after `add` returns,
+	 * so a retry of that job in between still reads the row as running and must
+	 * not bring the job back. Only idempotent submissions choose an id.
+	 */
+	private readonly removedCallerIds = new Set<string>();
 	private readonly resolveConcurrency: InMemoryQueueOptions["resolveConcurrency"];
 	private readonly now: () => number;
 
@@ -162,8 +171,13 @@ export class InMemoryQueue {
 		return Promise.resolve();
 	}
 
+	private rememberRemoved(job: InternalJob) {
+		if (job.callerId) this.removedCallerIds.add(job.id);
+	}
+
 	async add(data: DeploymentJob, jobId?: string): Promise<AddResult> {
 		if (jobId) {
+			if (this.removedCallerIds.has(jobId)) return { id: jobId, superseded: [] };
 			const existing = [...this.partitions.values()].some(
 				(partition) =>
 					partition.waiting.some((job) => job.id === jobId) ||
@@ -177,7 +191,10 @@ export class InMemoryQueue {
 		const superseded: DeploymentJob[] = [];
 		partition.waiting = partition.waiting.filter((waiting) => {
 			const replaced = replacesWaiting(data, waiting.data);
-			if (replaced) superseded.push(waiting.data);
+			if (replaced) {
+				superseded.push(waiting.data);
+				this.rememberRemoved(waiting);
+			}
 			return !replaced;
 		});
 		const job: InternalJob = {
@@ -188,6 +205,7 @@ export class InMemoryQueue {
 			state: "waiting",
 			partition: partitionKey,
 			group: getGroup(data),
+			callerId: jobId !== undefined,
 		};
 		partition.waiting.push(job);
 		this.schedule();
@@ -245,7 +263,10 @@ export class InMemoryQueue {
 		for (const partition of this.partitions.values()) {
 			partition.waiting = partition.waiting.filter((job) => {
 				const match = predicate(job.data);
-				if (match) removed.push(job.data);
+				if (match) {
+					removed.push(job.data);
+					this.rememberRemoved(job);
+				}
 				return !match;
 			});
 		}
