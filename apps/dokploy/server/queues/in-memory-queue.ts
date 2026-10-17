@@ -13,10 +13,10 @@ import type { DeploymentJob } from "./queue-types";
  *   or compose) never run in parallel — they are serialized FIFO. This avoids
  *   two builds of the same service stepping on each other (same code dir,
  *   same container name, etc).
- * - Newest wins: adding a job removes every waiting job for the same deploy
- *   target (see `getSupersedeKey`) in the same partition, so at most one
- *   waiting job per target remains behind the active build. Active jobs always
- *   run to completion.
+ * - Newest wins: adding a job removes the waiting jobs for the same deploy
+ *   target (see `getSupersedeKey`) in the same partition that it fully covers
+ *   (see `replacesWaiting`), so a push burst leaves one waiting job behind the
+ *   active build. Active jobs always run to completion.
  *
  * The concurrency is resolved lazily per partition through `resolveConcurrency`
  * so it can be gated by the enterprise license at run time (a non-licensed
@@ -66,6 +66,23 @@ export const getSupersedeKey = (data: DeploymentJob): string => {
 		return `preview:${data.previewDeploymentId}`;
 	}
 	return getGroup(data);
+};
+
+/**
+ * A newer job replaces a waiting one only when it does at least the same work:
+ * a redeploy rebuilds the existing checkout, so it never replaces a waiting
+ * deploy (which pulls new source), and a job without `freshVolumes` never
+ * replaces one that wipes volumes.
+ */
+const replacesWaiting = (
+	newer: DeploymentJob,
+	waiting: DeploymentJob,
+): boolean => {
+	if (getSupersedeKey(newer) !== getSupersedeKey(waiting)) return false;
+	if (waiting.type === "deploy" && newer.type === "redeploy") return false;
+	const wipesVolumes = (job: DeploymentJob) =>
+		job.applicationType === "compose" && job.freshVolumes === true;
+	return !wipesVolumes(waiting) || wipesVolumes(newer);
 };
 
 export interface AddResult {
@@ -157,10 +174,9 @@ export class InMemoryQueue {
 		const id = jobId ?? `job-${++this.seq}`;
 		const partitionKey = getPartition(data);
 		const partition = this.getPartitionState(partitionKey);
-		const supersedeKey = getSupersedeKey(data);
 		const superseded: DeploymentJob[] = [];
 		partition.waiting = partition.waiting.filter((waiting) => {
-			const replaced = getSupersedeKey(waiting.data) === supersedeKey;
+			const replaced = replacesWaiting(data, waiting.data);
 			if (replaced) superseded.push(waiting.data);
 			return !replaced;
 		});

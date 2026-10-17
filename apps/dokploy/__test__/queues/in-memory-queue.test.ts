@@ -442,6 +442,40 @@ describe("InMemoryQueue newest-wins supersede", () => {
 		]);
 	});
 
+	it("never lets a redeploy or a plain compose deploy drop work a waiting job owns", async () => {
+		const { queue } = await startBlockedQueue();
+
+		await queue.add({ ...appJob("app"), titleLog: "active" });
+		await flush();
+		await queue.add({ ...appJob("app"), titleLog: "pushed-commit" });
+		const redeploy = await queue.add({
+			...appJob("app"),
+			type: "redeploy",
+			titleLog: "reload",
+		});
+		await queue.add({
+			composeId: "stack",
+			descriptionLog: "",
+			type: "deploy",
+			applicationType: "compose",
+			freshVolumes: true,
+			titleLog: "wipe",
+		});
+		const plainCompose = await queue.add({
+			...composeJob("stack"),
+			titleLog: "webhook",
+		});
+
+		expect(redeploy.superseded).toEqual([]);
+		expect(plainCompose.superseded).toEqual([]);
+		expect(await waitingTitles(queue)).toEqual([
+			"pushed-commit",
+			"reload",
+			"wipe",
+			"webhook",
+		]);
+	});
+
 	it("keeps the explicit-jobId dedup without superseding", async () => {
 		const { queue } = await startBlockedQueue();
 
