@@ -17,6 +17,7 @@ import {
 import {
 	Form,
 	FormControl,
+	FormDescription,
 	FormField,
 	FormItem,
 	FormLabel,
@@ -32,6 +33,7 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { api } from "@/utils/api";
 import { AddSwarmSettings } from "./modify-swarm-settings";
 
@@ -43,6 +45,7 @@ interface Props {
 const AddRedirectSchema = z.object({
 	replicas: z.number().min(1, "Replicas must be at least 1"),
 	registryId: z.string().optional(),
+	swarmVipConnectionReuse: z.boolean().optional(),
 });
 
 type AddCommand = z.infer<typeof AddRedirectSchema>;
@@ -83,6 +86,7 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 			...(type === "application" && data && "registryId" in data
 				? {
 						registryId: data?.registryId || "",
+						swarmVipConnectionReuse: data.swarmVipConnectionReuse,
 					}
 				: {}),
 			replicas: data?.replicas || 1,
@@ -90,18 +94,34 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 		resolver: zodResolver(AddRedirectSchema),
 	});
 
+	const isApplication = type === "application" && data && "registryId" in data;
+	const registryId = isApplication ? data.registryId : undefined;
+	const swarmVipConnectionReuse = isApplication
+		? data.swarmVipConnectionReuse
+		: undefined;
+	const replicas = data?.replicas;
+	const command = data?.command;
+
+	// The application page polls this query, so reset only when a field shown
+	// here changes or the user navigates to a different service.
 	useEffect(() => {
-		if (data?.command) {
-			form.reset({
-				...(type === "application" && data && "registryId" in data
-					? {
-							registryId: data?.registryId || "",
-						}
-					: {}),
-				replicas: data?.replicas || 1,
-			});
-		}
-	}, [form, form.reset, form.formState.isSubmitSuccessful, data?.command]);
+		if (command === undefined || replicas === undefined) return;
+		form.reset({
+			...(isApplication
+				? { registryId: registryId || "", swarmVipConnectionReuse }
+				: {}),
+			replicas: replicas || 1,
+		});
+	}, [
+		id,
+		form,
+		form.formState.isSubmitSuccessful,
+		isApplication,
+		registryId,
+		swarmVipConnectionReuse,
+		replicas,
+		command,
+	]);
 
 	const onSubmit = async (data: AddCommand) => {
 		await mutateAsync({
@@ -117,6 +137,7 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 							data?.registryId === "none" || !data?.registryId
 								? null
 								: data?.registryId,
+						swarmVipConnectionReuse: data?.swarmVipConnectionReuse,
 					}
 				: {}),
 			replicas: data?.replicas,
@@ -198,6 +219,29 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 									</div>
 								) : (
 									<>
+										<FormField
+											control={form.control}
+											name="swarmVipConnectionReuse"
+											render={({ field }) => (
+												<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
+													<div className="space-y-0.5">
+														<FormLabel>Reuse backend connections</FormLabel>
+														<FormDescription>
+															Turn this off to open a new backend connection for
+															every request, so rolling updates never route to a
+															replaced task.
+														</FormDescription>
+													</div>
+													<FormControl>
+														<Switch
+															checked={field.value}
+															onCheckedChange={field.onChange}
+														/>
+													</FormControl>
+												</FormItem>
+											)}
+										/>
+
 										<FormField
 											control={form.control}
 											name="registryId"
