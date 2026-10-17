@@ -112,6 +112,23 @@ describe("deployment queue setup", () => {
 			["stale", "cancelled"],
 		]);
 
+		// A rollback reclaims its cancelled row under the same id and dispatches again.
+		await myQueue.add(
+			{
+				applicationId: "app",
+				deploymentId: "stale",
+				rollbackId: "rollback",
+				titleLog: "stale",
+				descriptionLog: "",
+				type: "rollback",
+				applicationType: "application",
+			},
+			"stale",
+		);
+		expect(
+			(await myQueue.getJobs(["waiting"])).map((job) => job.data.titleLog),
+		).toEqual(["stale"]);
+
 		myQueue.clearWaiting();
 		mocks.release();
 		await flush();

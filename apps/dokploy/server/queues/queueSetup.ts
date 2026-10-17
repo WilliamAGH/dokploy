@@ -6,6 +6,7 @@ import {
 import { resolveBuildsConcurrency } from "./concurrency";
 import { processDeploymentJob } from "./deployments-queue";
 import {
+	getDeploymentRow,
 	getSupersedeKey,
 	type InMemoryJob,
 	InMemoryQueue,
@@ -30,6 +31,7 @@ interface DeploymentQueue {
 	removeWaitingJobs: (
 		predicate: (data: DeploymentJob) => boolean,
 	) => DeploymentJob[];
+	releaseCancelled: (removedJobs: DeploymentJob[]) => void;
 	clearWaiting: () => number;
 }
 
@@ -41,22 +43,24 @@ const createNoopQueue = (): DeploymentQueue => ({
 	run: () => Promise.resolve(),
 	removeWaiting: () => 0,
 	removeWaitingJobs: () => [],
+	releaseCancelled: () => {},
 	clearWaiting: () => 0,
 });
 
-/**
- * Mark the deployment rows of removed waiting jobs cancelled. Only application
- * jobs (deploy, redeploy, rollback) can carry a pre-created row; compose and
- * preview jobs create theirs when they start, so a removed one has no row.
- */
+/** Mark the deployment rows of removed waiting jobs cancelled. */
 const cancelRemovedJobs = async (removedJobs: DeploymentJob[]) => {
-	await Promise.all(
-		removedJobs.flatMap((job) =>
-			job.applicationType === "application" && job.deploymentId
-				? [updateDeploymentStatus(job.deploymentId, "cancelled")]
-				: [],
-		),
-	);
+	try {
+		await Promise.all(
+			removedJobs.flatMap((job) => {
+				const deploymentId = getDeploymentRow(job);
+				return deploymentId
+					? [updateDeploymentStatus(deploymentId, "cancelled")]
+					: [];
+			}),
+		);
+	} finally {
+		myQueue.releaseCancelled(removedJobs);
+	}
 };
 
 const createInMemoryQueue = (): DeploymentQueue => {
@@ -82,6 +86,7 @@ const createInMemoryQueue = (): DeploymentQueue => {
 		run: () => queue.run(),
 		removeWaiting: (predicate) => queue.removeWaiting(predicate),
 		removeWaitingJobs: (predicate) => queue.removeWaitingJobs(predicate),
+		releaseCancelled: (removedJobs) => queue.releaseCancelled(removedJobs),
 		clearWaiting: () => queue.clearWaiting(),
 	};
 };
