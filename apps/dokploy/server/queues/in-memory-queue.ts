@@ -177,7 +177,8 @@ export class InMemoryQueue {
 
 	async add(data: DeploymentJob, jobId?: string): Promise<AddResult> {
 		if (jobId) {
-			if (this.removedCallerIds.has(jobId)) return { id: jobId, superseded: [] };
+			if (this.removedCallerIds.has(jobId))
+				return { id: jobId, superseded: [] };
 			const existing = [...this.partitions.values()].some(
 				(partition) =>
 					partition.waiting.some((job) => job.id === jobId) ||
