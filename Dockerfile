@@ -1,26 +1,39 @@
 # syntax=docker/dockerfile:1
-FROM node:24.4.0-slim AS base
+FROM node:24.18.0-slim AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
-RUN corepack prepare pnpm@12.3.4 --activate
+# Node 24.4.0's Corepack runs bin/pnpm.cjs, which pnpm >=11 no longer
+# ships. This copy is baked into the image because the runtime stage runs pnpm;
+# `pnpm --version` fetches pnpm's native binary now rather than at container start.
+RUN corepack enable && corepack prepare pnpm@12.3.4 --activate && pnpm --version
 
 FROM base AS build
+ARG TARGETARCH
+# The store is a cache mount, so the global virtual store would leave node_modules
+# linked into a directory that later steps and the final image do not have.
+ENV pnpm_config_virtual_store_type=project
+ENV pnpm_config_store_dir=/pnpm/store
 COPY . /usr/src/app
 WORKDIR /usr/src/app
 
 RUN apt-get update && apt-get install -y python3 make g++ git python3-pip pkg-config libsecret-1-dev && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    --mount=type=cache,id=corepack-${TARGETARCH},target=/root/.cache/node/corepack \
+    pnpm install --frozen-lockfile
 
 # Deploy only the dokploy app
 
 ENV NODE_ENV=production
-RUN pnpm --filter=@dokploy/server build
-RUN pnpm --filter=./apps/dokploy run build
+RUN --mount=type=cache,id=corepack-${TARGETARCH},target=/root/.cache/node/corepack \
+    pnpm --filter=@dokploy/server build
+RUN --mount=type=cache,id=corepack-${TARGETARCH},target=/root/.cache/node/corepack \
+    pnpm --filter=./apps/dokploy run build
 
-RUN pnpm --filter=./apps/dokploy --prod deploy --legacy /prod/dokploy
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    --mount=type=cache,id=corepack-${TARGETARCH},target=/root/.cache/node/corepack \
+    pnpm --filter=./apps/dokploy --prod deploy --legacy /prod/dokploy
 
 RUN cp -R /usr/src/app/apps/dokploy/.next /prod/dokploy/.next
 RUN cp -R /usr/src/app/apps/dokploy/dist /prod/dokploy/dist
