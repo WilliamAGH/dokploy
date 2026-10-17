@@ -62,7 +62,7 @@ jobs:
         run: pnpm typecheck
 
       - name: Run unit tests
-        run: pnpm --filter=dokploy exec vitest run --config __test__/vitest.config.ts --exclude __test__/deploy/application.real.test.ts --exclude __test__/setup/monitoring-setup.real.test.ts
+        run: pnpm --filter=./apps/dokploy exec vitest run --config __test__/vitest.config.ts --exclude __test__/deploy/application.real.test.ts --exclude __test__/setup/monitoring-setup.real.test.ts
 
       - name: Verify generated OpenAPI
         run: |
@@ -127,7 +127,7 @@ jobs:
 
       - name: Run the real-execution suites
         run: |
-          pnpm --filter=dokploy exec vitest run --config __test__/vitest.config.ts \
+          pnpm --filter=./apps/dokploy exec vitest run --config __test__/vitest.config.ts \
             __test__/deploy/application.real.test.ts \
             __test__/setup/monitoring-setup.real.test.ts
 
