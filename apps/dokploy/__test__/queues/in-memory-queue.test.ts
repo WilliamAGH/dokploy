@@ -341,3 +341,122 @@ describe("InMemoryQueue job management", () => {
 		expect(started).toEqual(["a", "b"]);
 	});
 });
+
+const previewJob = (
+	applicationId: string,
+	previewDeploymentId: string,
+): DeploymentJob => ({
+	applicationId,
+	previewDeploymentId,
+	titleLog: "deploy",
+	descriptionLog: "",
+	type: "deploy",
+	applicationType: "application-preview",
+});
+
+describe("InMemoryQueue newest-wins supersede", () => {
+	const startBlockedQueue = async () => {
+		const block = deferred();
+		const started: DeploymentJob[] = [];
+		const queue = new InMemoryQueue({ resolveConcurrency: () => 1 });
+		queue.process(async (job) => {
+			started.push(job.data);
+			await block.promise;
+		});
+		await queue.run();
+		return { queue, started, block };
+	};
+
+	const waitingTitles = async (queue: InMemoryQueue) =>
+		(await queue.getJobs(["waiting"])).map((job) => job.data.titleLog);
+
+	it("replaces older waiting jobs of the same application and keeps the active one", async () => {
+		const { queue, started, block } = await startBlockedQueue();
+
+		await queue.add({ ...appJob("app"), titleLog: "active" });
+		await flush();
+		await queue.add({ ...appJob("app"), titleLog: "second" });
+		await queue.add({ ...appJob("app"), titleLog: "third" });
+		const result = await queue.add({ ...appJob("app"), titleLog: "newest" });
+
+		expect(result.superseded.map((job) => job.titleLog)).toEqual(["third"]);
+		expect(await waitingTitles(queue)).toEqual(["newest"]);
+		expect(
+			(await queue.getJobs(["active"])).map((j) => j.data.titleLog),
+		).toEqual(["active"]);
+
+		block.release();
+		await flush();
+		await flush();
+		expect(started.map((job) => job.titleLog)).toEqual(["active", "newest"]);
+	});
+
+	it("replaces older waiting compose jobs", async () => {
+		const { queue } = await startBlockedQueue();
+
+		await queue.add({ ...composeJob("stack"), titleLog: "active" });
+		await flush();
+		await queue.add({ ...composeJob("stack"), titleLog: "older" });
+		const result = await queue.add({
+			...composeJob("stack"),
+			titleLog: "newest",
+		});
+
+		expect(result.superseded.map((job) => job.titleLog)).toEqual(["older"]);
+		expect(await waitingTitles(queue)).toEqual(["newest"]);
+	});
+
+	it("keeps waiting jobs of two preview deployments of one application", async () => {
+		const { queue } = await startBlockedQueue();
+
+		await queue.add({ ...appJob("app"), titleLog: "active" });
+		await flush();
+		await queue.add({ ...previewJob("app", "pr-1"), titleLog: "pr-1" });
+		await queue.add({ ...previewJob("app", "pr-2"), titleLog: "pr-2" });
+		const result = await queue.add({
+			...previewJob("app", "pr-1"),
+			titleLog: "pr-1-newer",
+		});
+
+		expect(result.superseded.map((job) => job.titleLog)).toEqual(["pr-1"]);
+		expect(await waitingTitles(queue)).toEqual(["pr-2", "pr-1-newer"]);
+	});
+
+	it("leaves other services and other server partitions untouched", async () => {
+		const { queue } = await startBlockedQueue();
+
+		await queue.add({ ...appJob("blocker"), titleLog: "active" });
+		await queue.add({ ...appJob("app", "server-1"), titleLog: "s1-active" });
+		await flush();
+		await queue.add({ ...appJob("other"), titleLog: "other-app" });
+		await queue.add({ ...composeJob("app"), titleLog: "compose-same-id" });
+		await queue.add({ ...appJob("app", "server-1"), titleLog: "s1-waiting" });
+		const result = await queue.add({ ...appJob("app"), titleLog: "local-app" });
+
+		expect(result.superseded).toEqual([]);
+		expect((await waitingTitles(queue)).sort()).toEqual([
+			"compose-same-id",
+			"local-app",
+			"other-app",
+			"s1-waiting",
+		]);
+	});
+
+	it("keeps the explicit-jobId dedup without superseding", async () => {
+		const { queue } = await startBlockedQueue();
+
+		await queue.add({ ...appJob("app"), titleLog: "active" });
+		await flush();
+		await queue.add(
+			{ ...appJob("app"), titleLog: "submitted" },
+			"deployment-1",
+		);
+		const result = await queue.add(
+			{ ...appJob("app"), titleLog: "retry" },
+			"deployment-1",
+		);
+
+		expect(result).toEqual({ id: "deployment-1", superseded: [] });
+		expect(await waitingTitles(queue)).toEqual(["submitted"]);
+	});
+});

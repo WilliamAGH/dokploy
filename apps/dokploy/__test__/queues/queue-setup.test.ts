@@ -1,0 +1,87 @@
+import { describe, expect, it, vi } from "vitest";
+import type { DeploymentJob } from "../../server/queues/queue-types";
+
+const mocks = vi.hoisted(() => ({
+	release: () => {},
+	updateDeploymentStatus: vi.fn(),
+}));
+
+vi.mock("@dokploy/server", () => ({
+	IS_CLOUD: false,
+	updateDeploymentStatus: mocks.updateDeploymentStatus,
+}));
+
+vi.mock("@dokploy/server/utils/process/execAsync", () => ({
+	execAsync: vi.fn(),
+	execAsyncRemote: vi.fn(),
+}));
+
+vi.mock("../../server/queues/concurrency", () => ({
+	resolveBuildsConcurrency: () => 1,
+}));
+
+vi.mock("../../server/queues/deployments-queue", () => ({
+	processDeploymentJob: () =>
+		new Promise<void>((resolve) => {
+			mocks.release = resolve;
+		}),
+}));
+
+const { cleanQueuesByCompose, myQueue } = await import(
+	"../../server/queues/queueSetup"
+);
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+const appJob = (deploymentId: string): DeploymentJob => ({
+	applicationId: "app",
+	deploymentId,
+	titleLog: deploymentId,
+	descriptionLog: "",
+	type: "deploy",
+	applicationType: "application",
+});
+
+const composeJob = (titleLog: string): DeploymentJob => ({
+	composeId: "stack",
+	titleLog,
+	descriptionLog: "",
+	type: "deploy",
+	applicationType: "compose",
+});
+
+describe("deployment queue setup", () => {
+	it("cancels the rows of replaced waiting jobs and never the active one", async () => {
+		await myQueue.add(appJob("active"));
+		await flush();
+		await myQueue.add(appJob("older"), "older");
+		await myQueue.add(appJob("newest"), "newest");
+
+		expect(mocks.updateDeploymentStatus.mock.calls).toEqual([
+			["older", "cancelled"],
+		]);
+		expect(
+			(await myQueue.getJobs(["waiting"])).map((job) => job.data.titleLog),
+		).toEqual(["newest"]);
+		expect(
+			(await myQueue.getJobs(["active"])).map((job) => job.data.titleLog),
+		).toEqual(["active"]);
+
+		myQueue.clearWaiting();
+		mocks.release();
+		await flush();
+	});
+
+	it("removes waiting compose jobs, which own no deployment row yet", async () => {
+		mocks.updateDeploymentStatus.mockClear();
+		await myQueue.add(composeJob("compose-active"));
+		await flush();
+		await myQueue.add(composeJob("compose-waiting"));
+
+		await cleanQueuesByCompose("stack");
+
+		expect(await myQueue.getJobs(["waiting"])).toEqual([]);
+		expect(mocks.updateDeploymentStatus).not.toHaveBeenCalled();
+		mocks.release();
+	});
+});

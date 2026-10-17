@@ -13,6 +13,10 @@ import type { DeploymentJob } from "./queue-types";
  *   or compose) never run in parallel — they are serialized FIFO. This avoids
  *   two builds of the same service stepping on each other (same code dir,
  *   same container name, etc).
+ * - Newest wins: adding a job removes every waiting job for the same deploy
+ *   target (see `getSupersedeKey`) in the same partition, so at most one
+ *   waiting job per target remains behind the active build. Active jobs always
+ *   run to completion.
  *
  * The concurrency is resolved lazily per partition through `resolveConcurrency`
  * so it can be gated by the enterprise license at run time (a non-licensed
@@ -51,6 +55,24 @@ export const getGroup = (data: DeploymentJob): string => {
 	}
 	return `application:${data.applicationId}`;
 };
+
+/**
+ * Resolve the deploy target whose waiting jobs a newer job replaces. Unlike
+ * `getGroup`, each preview deployment is its own target, so two pull-request
+ * previews of one application never replace each other.
+ */
+export const getSupersedeKey = (data: DeploymentJob): string => {
+	if (data.applicationType === "application-preview") {
+		return `preview:${data.previewDeploymentId}`;
+	}
+	return getGroup(data);
+};
+
+export interface AddResult {
+	id: string;
+	/** Waiting jobs removed because this job replaced them. */
+	superseded: DeploymentJob[];
+}
 
 interface InternalJob {
 	id: string;
@@ -123,17 +145,25 @@ export class InMemoryQueue {
 		return Promise.resolve();
 	}
 
-	async add(data: DeploymentJob, jobId?: string): Promise<{ id: string }> {
+	async add(data: DeploymentJob, jobId?: string): Promise<AddResult> {
 		if (jobId) {
 			const existing = [...this.partitions.values()].some(
 				(partition) =>
 					partition.waiting.some((job) => job.id === jobId) ||
 					partition.active.some((job) => job.id === jobId),
 			);
-			if (existing) return { id: jobId };
+			if (existing) return { id: jobId, superseded: [] };
 		}
 		const id = jobId ?? `job-${++this.seq}`;
 		const partitionKey = getPartition(data);
+		const partition = this.getPartitionState(partitionKey);
+		const supersedeKey = getSupersedeKey(data);
+		const superseded: DeploymentJob[] = [];
+		partition.waiting = partition.waiting.filter((waiting) => {
+			const replaced = getSupersedeKey(waiting.data) === supersedeKey;
+			if (replaced) superseded.push(waiting.data);
+			return !replaced;
+		});
 		const job: InternalJob = {
 			id,
 			name: "deployments",
@@ -143,9 +173,9 @@ export class InMemoryQueue {
 			partition: partitionKey,
 			group: getGroup(data),
 		};
-		this.getPartitionState(partitionKey).waiting.push(job);
+		partition.waiting.push(job);
 		this.schedule();
-		return { id };
+		return { id, superseded };
 	}
 
 	private toPublic(job: InternalJob): InMemoryJob {

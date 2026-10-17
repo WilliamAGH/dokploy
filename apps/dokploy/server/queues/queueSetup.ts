@@ -5,7 +5,11 @@ import {
 } from "@dokploy/server/utils/process/execAsync";
 import { resolveBuildsConcurrency } from "./concurrency";
 import { processDeploymentJob } from "./deployments-queue";
-import { type InMemoryJob, InMemoryQueue } from "./in-memory-queue";
+import {
+	getSupersedeKey,
+	type InMemoryJob,
+	InMemoryQueue,
+} from "./in-memory-queue";
 import type { DeploymentJob } from "./queue-types";
 
 /**
@@ -40,6 +44,21 @@ const createNoopQueue = (): DeploymentQueue => ({
 	clearWaiting: () => 0,
 });
 
+/**
+ * Mark the deployment rows of removed waiting jobs cancelled. Only application
+ * jobs (deploy, redeploy, rollback) can carry a pre-created row; compose and
+ * preview jobs create theirs when they start, so a removed one has no row.
+ */
+const cancelRemovedJobs = async (removedJobs: DeploymentJob[]) => {
+	await Promise.all(
+		removedJobs.flatMap((job) =>
+			job.applicationType === "application" && job.deploymentId
+				? [updateDeploymentStatus(job.deploymentId, "cancelled")]
+				: [],
+		),
+	);
+};
+
 const createInMemoryQueue = (): DeploymentQueue => {
 	const queue = new InMemoryQueue({
 		resolveConcurrency: resolveBuildsConcurrency,
@@ -47,7 +66,16 @@ const createInMemoryQueue = (): DeploymentQueue => {
 	queue.process(processDeploymentJob);
 
 	return {
-		add: (data, jobId) => queue.add(data, jobId),
+		add: async (data, jobId) => {
+			const { id, superseded } = await queue.add(data, jobId);
+			await cancelRemovedJobs(superseded);
+			if (superseded.length > 0) {
+				console.log(
+					`Replaced ${superseded.length} waiting job(s) for ${getSupersedeKey(data)}`,
+				);
+			}
+			return { id };
+		},
 		getJobs: (states) => queue.getJobs(states),
 		close: () => queue.close(),
 		on: () => {},
@@ -98,18 +126,9 @@ if (!IS_CLOUD) {
 
 export const cleanQueuesByApplication = async (applicationId: string) => {
 	const removedJobs = myQueue.removeWaitingJobs(
-		(data) => (data as any)?.applicationId === applicationId,
+		(data) => "applicationId" in data && data.applicationId === applicationId,
 	);
-	const deploymentIds = removedJobs.flatMap((job) =>
-		job.applicationType === "application" && job.deploymentId
-			? [job.deploymentId]
-			: [],
-	);
-	await Promise.all(
-		deploymentIds.map((deploymentId) =>
-			updateDeploymentStatus(deploymentId, "cancelled"),
-		),
-	);
+	await cancelRemovedJobs(removedJobs);
 	if (removedJobs.length > 0) {
 		console.log(
 			`Removed ${removedJobs.length} waiting job(s) for application ${applicationId}`,
@@ -118,23 +137,19 @@ export const cleanQueuesByApplication = async (applicationId: string) => {
 };
 
 export const cleanQueuesByCompose = async (composeId: string) => {
-	const removed = myQueue.removeWaiting(
-		(data) => (data as any)?.composeId === composeId,
+	const removedJobs = myQueue.removeWaitingJobs(
+		(data) => "composeId" in data && data.composeId === composeId,
 	);
-	if (removed > 0) {
-		console.log(`Removed ${removed} waiting job(s) for compose ${composeId}`);
+	await cancelRemovedJobs(removedJobs);
+	if (removedJobs.length > 0) {
+		console.log(
+			`Removed ${removedJobs.length} waiting job(s) for compose ${composeId}`,
+		);
 	}
 };
 
 export const cleanAllDeploymentQueue = async () => {
-	const removedJobs = myQueue.removeWaitingJobs(() => true);
-	await Promise.all(
-		removedJobs.flatMap((job) =>
-			job.applicationType === "application" && job.deploymentId
-				? [updateDeploymentStatus(job.deploymentId, "cancelled")]
-				: [],
-		),
-	);
+	await cancelRemovedJobs(myQueue.removeWaitingJobs(() => true));
 	return true;
 };
 
