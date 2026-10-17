@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 FROM node:24.18.0-slim AS base
 ENV PNPM_HOME="/pnpm"
-ENV PATH="$PNPM_HOME:$PATH"
+ENV PATH="$PNPM_HOME/bin:$PATH"
 # Node 24.4.0's Corepack runs bin/pnpm.cjs, which pnpm >=11 no longer
 # ships. This copy is baked into the image because the runtime stage runs pnpm;
 # `pnpm --version` fetches pnpm's native binary now rather than at container start.
