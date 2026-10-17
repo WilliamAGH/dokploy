@@ -7,9 +7,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   pr-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       matrix:
         job: [build, test, typecheck]

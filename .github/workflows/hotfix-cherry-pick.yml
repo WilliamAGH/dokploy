@@ -12,6 +12,7 @@ jobs:
   cherry-pick:
     if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'hotfix')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
