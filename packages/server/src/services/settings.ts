@@ -7,6 +7,7 @@ import {
 import { and, eq } from "drizzle-orm";
 
 import semver from "semver";
+import { TRAEFIK_CONTAINER_NAME_FILTER } from "../constants";
 import { db } from "../db";
 import { compose } from "../db/schema";
 import {
@@ -525,7 +526,7 @@ export const reconnectServicesToTraefik = async (serverId?: string) => {
 	let commands = "";
 
 	for (const compose of composeResult) {
-		commands += `docker network connect ${compose.appName} $(docker ps --filter "name=^dokploy-traefik$" -q) >/dev/null 2>&1\n`;
+		commands += `docker network connect ${compose.appName} $(docker ps --filter "${TRAEFIK_CONTAINER_NAME_FILTER}" -q) >/dev/null 2>&1\n`;
 	}
 
 	if (serverId) {

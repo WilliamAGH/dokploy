@@ -13,6 +13,11 @@ export const DOKPLOY_DOCKER_PORT = process.env.DOKPLOY_DOCKER_PORT
 
 export const CLEANUP_CRON_JOB = "50 23 * * *";
 
+// Traefik runs as the standalone container "dokploy-traefik" or as the replicated
+// Swarm service task "dokploy-traefik.<slot>.<task-id>"; anything else that merely
+// starts with the name (dokploy-traefik-old) is not it. Docker matches name= as a regex.
+export const TRAEFIK_CONTAINER_NAME_FILTER = String.raw`name=^dokploy-traefik(\.[0-9]+\.[a-z0-9]+)?$`;
+
 // Body size limits for the OpenAPI catch-all route (pages/api/[...trpc].ts).
 const parseByteSize = (envVar: string, fallback: number): number => {
 	const raw = process.env[envVar];

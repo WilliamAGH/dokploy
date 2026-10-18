@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { paths } from "@dokploy/server/constants";
+import {
+	paths,
+	TRAEFIK_CONTAINER_NAME_FILTER,
+} from "@dokploy/server/constants";
 import {
 	getWebServerSettings,
 	updateWebServerSettings,
@@ -37,7 +40,7 @@ export const startLogCleanup = async (
 				// swarm service task ("dokploy-traefik.1.<task-id>"), so resolve the
 				// running container id dynamically instead of assuming the name.
 				const { stdout: containerId } = await execAsync(
-					'docker ps -q --filter "name=^dokploy-traefik$" --filter "status=running" | head -n 1',
+					`docker ps -q --filter "${TRAEFIK_CONTAINER_NAME_FILTER}" --filter "status=running" | head -n 1`,
 				);
 				const traefikContainerId = containerId.trim();
 				if (!traefikContainerId) {
