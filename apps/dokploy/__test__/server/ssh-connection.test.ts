@@ -46,6 +46,12 @@ const runExec = (command: string, stdin: string, channel: ServerChannel) => {
 		channel.exit(code ?? 1);
 		channel.end();
 	});
+	// sshd discards stdin a command exits without reading (`cat > /missing/dir`
+	// fails its redirect first); writing to that dead pipe raises EPIPE, which
+	// only the real server would absorb.
+	shell.stdin.on("error", (error: NodeJS.ErrnoException) => {
+		if (error.code !== "EPIPE") throw error;
+	});
 	shell.stdin.end(stdin);
 };
 
