@@ -37,7 +37,7 @@ export const startLogCleanup = async (
 				// swarm service task ("dokploy-traefik.1.<task-id>"), so resolve the
 				// running container id dynamically instead of assuming the name.
 				const { stdout: containerId } = await execAsync(
-					'docker ps -q --filter "name=dokploy-traefik" --filter "status=running" | head -n 1',
+					'docker ps -q --filter "name=^dokploy-traefik$" --filter "status=running" | head -n 1',
 				);
 				const traefikContainerId = containerId.trim();
 				if (!traefikContainerId) {
