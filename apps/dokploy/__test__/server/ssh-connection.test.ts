@@ -216,6 +216,13 @@ describe("writeFileRemote over a pooled SSH connection", () => {
 		expect(connections - before).toBe(0);
 	});
 
+	it("writes a path holding both a quote and an exclamation mark under its own name", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "write-remote-"));
+		const target = join(dir, "it's live!.yml");
+		await writeFileRemote("srv-write", target, "x");
+		expect(await readFile(target, "utf8")).toBe("x");
+	});
+
 	it("rejects with the remote error when the file cannot be written", async () => {
 		const failure = writeFileRemote(
 			"srv-write",
@@ -441,6 +448,63 @@ describe("a server that cannot complete a login", () => {
 			);
 			for (const client of clients) client.end();
 			await new Promise<void>((resolve) => relay.close(() => resolve()));
+		}
+	});
+
+	it("fails a login the server drops after its banner instead of hanging", async () => {
+		const hangUp = net.createServer((socket) => {
+			// Reading lets the server see the client's own FIN and close.
+			socket.resume();
+			socket.end("SSH-2.0-OpenSSH_9.9\r\n");
+		});
+		await new Promise<void>((resolve) => hangUp.listen(0, "127.0.0.1", resolve));
+		const hangUpPort = (hangUp.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-hangup"
+				? { ...serverRow(serverId), port: hangUpPort }
+				: serverRow(serverId),
+		);
+		try {
+			await expect(execAsyncRemote("srv-hangup", "true")).rejects.toThrow(
+				/SSH connection error: Connection lost before login/,
+			);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			await new Promise<void>((resolve) => hangUp.close(() => resolve()));
+		}
+	});
+
+	it("counts a burst of overlapping failed logins as one failure", async () => {
+		let attempts = 0;
+		const dead = net.createServer((socket) => {
+			attempts++;
+			socket.destroy();
+		});
+		await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
+		const deadPort = (dead.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-burst"
+				? { ...serverRow(serverId), port: deadPort }
+				: serverRow(serverId),
+		);
+		try {
+			// Sixteen callers need two logins; both fail inside one outage.
+			await Promise.allSettled(
+				Array.from({ length: 16 }, () => execAsyncRemote("srv-burst", "true")),
+			);
+			expect(attempts).toBe(2);
+			// One counted failure parks nothing, so the next caller still tries a login.
+			await expect(execAsyncRemote("srv-burst", "true")).rejects.toThrow(
+				/SSH connection error/,
+			);
+			expect(attempts).toBe(3);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			await new Promise<void>((resolve) => dead.close(() => resolve()));
 		}
 	});
 
