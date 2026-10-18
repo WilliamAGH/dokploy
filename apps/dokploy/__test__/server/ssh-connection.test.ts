@@ -357,6 +357,50 @@ describe("a server that cannot complete a login", () => {
 		}
 	});
 
+	it("keeps a capped park parked when its next failure follows the park's expiry", async () => {
+		let attempts = 0;
+		const dead = net.createServer((socket) => {
+			attempts++;
+			socket.destroy();
+		});
+		await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
+		const deadPort = (dead.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-capped"
+				? { ...serverRow(serverId), port: deadPort }
+				: serverRow(serverId),
+		);
+		// No jitter: every park lasts half its ceiling, at most 7.5 min.
+		const random = vi.spyOn(Math, "random").mockReturnValue(0);
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const fails = () =>
+				expect(execAsyncRemote("srv-capped", "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			// Climb to the cap: each step dials just after the previous park ends.
+			for (let i = 0; i < 8; i++) {
+				await fails();
+				vi.setSystemTime(Date.now() + 8 * 60_000);
+			}
+			// The last park started 16 min before the next failure but ended 8.5 min
+			// before it: measured from its expiry that failure is consecutive, so it
+			// parks again instead of restarting at a first, unparked failure.
+			vi.setSystemTime(Date.now() + 8 * 60_000);
+			const climbed = attempts;
+			await fails();
+			await fails();
+			expect(attempts).toBe(climbed + 1);
+		} finally {
+			random.mockRestore();
+			vi.useRealTimers();
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			await new Promise<void>((resolve) => dead.close(() => resolve()));
+		}
+	});
+
 	it("gives the next caller a fresh login after one dropped handshake", async () => {
 		let attempts = 0;
 		// Drops the first login, then relays every later one to the real server.

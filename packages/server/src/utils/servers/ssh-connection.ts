@@ -76,8 +76,12 @@ const recordConnectFailure = (key: string, error: Error) => {
 	}
 	const now = Date.now();
 	const prior = connectFailures.get(key);
+	// Measured from when the park expired, so a capped park reaches its next failure
+	// inside the window instead of collapsing back to the first rung.
 	const failures =
-		(prior && now - prior.at < CONNECT_BACKOFF_MAX_MS ? prior.failures : 0) + 1;
+		(prior && now - Math.max(prior.at, prior.retryAt) < CONNECT_BACKOFF_MAX_MS
+			? prior.failures
+			: 0) + 1;
 	if (failures < 2) {
 		connectFailures.set(key, { failures, at: now, retryAt: 0, error });
 		return;
