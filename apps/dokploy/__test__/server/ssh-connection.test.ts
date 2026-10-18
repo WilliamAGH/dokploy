@@ -105,11 +105,13 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 });
 
 let port = 0;
-const serverRow = (serverId: string) => ({
+// The pool is keyed by login identity, so each test's rows get their own user and
+// therefore their own connections; rows that pass the same user share one login.
+const serverRow = (serverId: string, username = serverId) => ({
 	serverId,
 	ipAddress: "127.0.0.1",
 	port,
-	username: "root",
+	username,
 	sshKeyId: "key",
 	sshKey: { privateKey: clientKey.private },
 });
@@ -186,6 +188,26 @@ describe("execAsyncRemote over a pooled SSH connection", () => {
 		const { stdout } = await execAsyncRemote("srv-retry", "echo recovered");
 		expect(stdout).toBe("recovered\n");
 		expect(connections - before).toBe(1);
+	});
+
+	it("shares one login between two server rows for the same host", async () => {
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId.startsWith("srv-twin-")
+				? serverRow(serverId, "twin")
+				: serverRow(serverId),
+		);
+		try {
+			const before = connections;
+			for (const serverId of ["srv-twin-a", "srv-twin-b", "srv-twin-a"]) {
+				const { stdout } = await execAsyncRemote(serverId, `echo ${serverId}`);
+				expect(stdout).toBe(`${serverId}\n`);
+			}
+			expect(connections - before).toBe(1);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+		}
 	});
 
 	it("reuses an idle connection for a once-a-minute caller", async () => {
@@ -519,6 +541,38 @@ describe("a server that cannot complete a login", () => {
 				serverRow(serverId),
 			);
 			await new Promise<void>((resolve) => hangUp.close(() => resolve()));
+		}
+	});
+
+	it("parks a host for every server row that logs in to it", async () => {
+		let attempts = 0;
+		const dead = net.createServer((socket) => {
+			attempts++;
+			socket.destroy();
+		});
+		await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
+		const deadPort = (dead.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId.startsWith("srv-dead-twin-")
+				? { ...serverRow(serverId, "dead-twin"), port: deadPort }
+				: serverRow(serverId),
+		);
+		try {
+			for (const serverId of ["srv-dead-twin-a", "srv-dead-twin-b"])
+				await expect(execAsyncRemote(serverId, "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			// The second row's failure is the host's second, so the host is parked for both.
+			for (const serverId of ["srv-dead-twin-a", "srv-dead-twin-b"])
+				await expect(execAsyncRemote(serverId, "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			expect(attempts).toBe(2);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			await new Promise<void>((resolve) => dead.close(() => resolve()));
 		}
 	});
 

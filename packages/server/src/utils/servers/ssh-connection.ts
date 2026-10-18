@@ -116,10 +116,10 @@ const recordConnectFailure = (
 	});
 };
 
-// A changed address, user or key gets its own connection instead of reusing a stale one.
+// Keyed by what the login is, not by the server row: two rows for one host share a
+// connection and its backoff park, while a changed address, user or key gets its own.
 const poolKey = (target: SshTarget) =>
 	[
-		target.serverId,
 		target.ipAddress,
 		target.port,
 		target.username,
