@@ -207,13 +207,16 @@ export const execAsyncRemote = async (
 					return;
 				}
 				reject(
-					new ExecError(`Remote command failed with ${channelExitText(code, signal)}`, {
-						command,
-						stdout,
-						stderr,
-						exitCode: code ?? undefined,
-						serverId,
-					}),
+					new ExecError(
+						`Remote command failed with ${channelExitText(code, signal)}`,
+						{
+							command,
+							stdout,
+							stderr,
+							exitCode: code ?? undefined,
+							serverId,
+						},
+					),
 				);
 			})
 			.on("data", (data: Buffer) => {
@@ -293,7 +296,12 @@ export const writeFileRemote = async (
 		// `cat` prints nothing, but an unread stdout would hold the channel open.
 		channel.resume();
 		channel.on("error", (error: Error) =>
-			reject(fail(`Failed to write remote file ${remotePath}: ${error.message}`, error)),
+			reject(
+				fail(
+					`Failed to write remote file ${remotePath}: ${error.message}`,
+					error,
+				),
+			),
 		);
 		channel.end(content);
 	});

@@ -501,7 +501,9 @@ describe("a server that cannot complete a login", () => {
 			socket.resume();
 			socket.end("SSH-2.0-OpenSSH_9.9\r\n");
 		});
-		await new Promise<void>((resolve) => hangUp.listen(0, "127.0.0.1", resolve));
+		await new Promise<void>((resolve) =>
+			hangUp.listen(0, "127.0.0.1", resolve),
+		);
 		const hangUpPort = (hangUp.address() as AddressInfo).port;
 		mocks.findServerById.mockImplementation(async (serverId: string) =>
 			serverId === "srv-hangup"
