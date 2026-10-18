@@ -10,6 +10,12 @@ const MAX_CHANNELS_PER_CONNECTION = 8;
 // It outlasts the slowest periodic caller, the per-minute inotify threshold scan,
 // so that scan reuses one login instead of opening a new one each minute.
 const IDLE_CLOSE_MS = 150_000;
+// ssh2's own default (lib/client.js); a reachable fleet server finishes the handshake in well under a second.
+const READY_TIMEOUT_MS = 20_000;
+// A failed login parks its target: the next attempt waits base * 2^(failures - 1), capped, with jitter,
+// so a down server costs one connection attempt per window instead of one handshake timeout per caller.
+const CONNECT_BACKOFF_BASE_MS = 30_000;
+const CONNECT_BACKOFF_MAX_MS = 15 * 60_000;
 
 /**
  * Runs the script that arrives on the channel's stdin. bash reads it through a
@@ -38,6 +44,25 @@ interface PooledConnection {
 
 const pools = new Map<string, PooledConnection[]>();
 
+interface ConnectFailure {
+	failures: number;
+	retryAt: number;
+	error: Error;
+}
+
+// Keyed like the pool, so a changed address, user or key retries at once.
+const connectFailures = new Map<string, ConnectFailure>();
+
+const recordConnectFailure = (key: string, error: Error) => {
+	const failures = (connectFailures.get(key)?.failures ?? 0) + 1;
+	const ceiling = Math.min(
+		CONNECT_BACKOFF_BASE_MS * 2 ** (failures - 1),
+		CONNECT_BACKOFF_MAX_MS,
+	);
+	const delay = ceiling / 2 + Math.random() * (ceiling / 2);
+	connectFailures.set(key, { failures, retryAt: Date.now() + delay, error });
+};
+
 // A changed address, user or key gets its own connection instead of reusing a stale one.
 const poolKey = (target: SshTarget) =>
 	[
@@ -63,9 +88,19 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 		if (remaining.length) pools.set(key, remaining);
 		else pools.delete(key);
 	};
+	// Only a login that never became ready parks the target; a later error on a live
+	// connection just drops it, and the next caller reconnects at once.
 	entry.ready = new Promise((resolve, reject) => {
-		client.once("ready", () => resolve());
-		client.once("error", reject);
+		const fail = (error: Error) => {
+			recordConnectFailure(key, error);
+			reject(error);
+		};
+		client.once("error", fail);
+		client.once("ready", () => {
+			client.off("error", fail);
+			connectFailures.delete(key);
+			resolve();
+		});
 	});
 	client.on("error", drop).on("close", drop).on("end", drop);
 	client.connect({
@@ -73,7 +108,7 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 		port: target.port,
 		username: target.username,
 		privateKey: target.privateKey,
-		readyTimeout: 60_000,
+		readyTimeout: READY_TIMEOUT_MS,
 		keepaliveInterval: 5_000,
 		keepaliveCountMax: 3,
 	});
@@ -94,6 +129,10 @@ const acquire = (target: SshTarget) => {
 		(e) => !e.closed && e.channels < MAX_CHANNELS_PER_CONNECTION,
 	);
 	if (!entry) {
+		const parked = connectFailures.get(key);
+		// The recorded error keeps ssh2's `level`, so callers still report an SSH
+		// connection or authentication error, without a new login attempt.
+		if (parked && Date.now() < parked.retryAt) throw parked.error;
 		entry = connect(key, target);
 		pools.set(key, [...list, entry]);
 	}

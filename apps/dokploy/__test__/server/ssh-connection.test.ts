@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -261,5 +262,49 @@ describe("execAsync on the local host", () => {
 		await expect(failure).rejects.toSatisfy(
 			(error: Error) => !error.message.includes(MARKER),
 		);
+	});
+});
+
+describe("a server that cannot complete a login", () => {
+	it("costs one connection attempt per backoff window, then retries", async () => {
+		let attempts = 0;
+		const dead = net.createServer((socket) => {
+			attempts++;
+			socket.destroy();
+		});
+		await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
+		const deadPort = (dead.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-dead"
+				? { ...serverRow(serverId), port: deadPort }
+				: serverRow(serverId),
+		);
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			for (let i = 0; i < 5; i++) {
+				await expect(execAsyncRemote("srv-dead", "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			}
+			expect(attempts).toBe(1);
+			// Past the first window's 30 s ceiling.
+			vi.setSystemTime(Date.now() + 31_000);
+			await expect(execAsyncRemote("srv-dead", "true")).rejects.toThrow(
+				/SSH connection error/,
+			);
+			expect(attempts).toBe(2);
+		} finally {
+			vi.useRealTimers();
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			await new Promise<void>((resolve) => dead.close(() => resolve()));
+		}
+	});
+
+	it("leaves a reachable server's logins pooled", async () => {
+		const before = connections;
+		for (let i = 0; i < 3; i++) await execAsyncRemote("srv-reachable", "true");
+		expect(connections - before).toBe(1);
 	});
 });
