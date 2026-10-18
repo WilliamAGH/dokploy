@@ -4,6 +4,7 @@ import { findServerById } from "@dokploy/server/services/server";
 import { quote } from "shell-quote";
 import type { ClientChannel } from "ssh2";
 import {
+	channelExitText,
 	openExecChannel,
 	REMOTE_SCRIPT_RUNNER,
 } from "../servers/ssh-connection";
@@ -201,17 +202,17 @@ export const execAsyncRemote = async (
 	let stderr = "";
 	return new Promise((resolve, reject) => {
 		channel
-			.on("close", (code: number) => {
+			.on("close", (code?: number | null, signal?: string) => {
 				if (code === 0) {
 					resolve({ stdout, stderr });
 					return;
 				}
 				reject(
-					new ExecError(`Remote command failed with exit code ${code}`, {
+					new ExecError(`Remote command failed with ${channelExitText(code, signal)}`, {
 						command,
 						stdout,
 						stderr,
-						exitCode: code,
+						exitCode: code ?? undefined,
 						serverId,
 					}),
 				);
@@ -263,12 +264,12 @@ export const writeFileRemote = async (
 
 	let stderr = "";
 	return new Promise((resolve, reject) => {
-		channel.on("close", (code: number) => {
+		channel.on("close", (code?: number | null, signal?: string) => {
 			if (code === 0) {
 				resolve();
 				return;
 			}
-			const message = `Failed to write remote file ${remotePath}: ${stderr.trim() || `exit code ${code}`}`;
+			const message = `Failed to write remote file ${remotePath}: ${stderr.trim() || channelExitText(code, signal)}`;
 			reject(fail(message, new Error(message)));
 		});
 		channel.stderr.on("data", (data: Buffer) => {

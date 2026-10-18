@@ -22,6 +22,7 @@ vi.mock("@dokploy/server/services/server", () => ({
 }));
 
 const MARKER = "SECRET-MARKER-123";
+const DROP = "DROP-CONNECTION-MID-COMMAND";
 
 // A real SSH server that records what reaches it: connections, exec request text,
 // and the bytes each channel receives on stdin.
@@ -29,6 +30,7 @@ const hostKey = utils.generateKeyPairSync("ed25519");
 const clientKey = utils.generateKeyPairSync("ed25519");
 let connections = 0;
 let refuseNextSession = false;
+let rejectNextLogin = false;
 let sessionDelayMs = 0;
 const execs: string[] = [];
 const stdins: string[] = [];
@@ -69,7 +71,11 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 	connections++;
 	clients.add(client);
 	client.on("close", () => clients.delete(client));
-	client.on("authentication", (ctx) => ctx.accept());
+	const refuseLogin = rejectNextLogin;
+	rejectNextLogin = false;
+	client.on("authentication", (ctx) =>
+		refuseLogin ? ctx.reject() : ctx.accept(),
+	);
 	client.on("ready", () => {
 		client.on("session", async (accept, reject) => {
 			if (refuseNextSession) {
@@ -92,6 +98,10 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 				});
 				channel.on("end", () => {
 					stdins.push(stdin);
+					if (stdin.includes(DROP)) {
+						client.end();
+						return;
+					}
 					runExec(info.command, stdin, channel);
 				});
 			});
@@ -152,6 +162,14 @@ describe("execAsyncRemote over a pooled SSH connection", () => {
 			exitCode: 3,
 			stdout: "before\n",
 		});
+	});
+
+	it("names a dropped connection instead of an undefined exit code", async () => {
+		const failure = execAsyncRemote("srv-drop", `echo ${DROP}`);
+		await expect(failure).rejects.toThrow(
+			/SSH connection closed before the command finished/,
+		);
+		await expect(failure).rejects.not.toThrow(/undefined/);
 	});
 
 	it("keeps the script, and any credential in it, out of the exec request", async () => {
@@ -306,6 +324,24 @@ describe("a server that cannot complete a login", () => {
 			);
 			await new Promise<void>((resolve) => dead.close(() => resolve()));
 		}
+	});
+
+	it("does not park a server whose other connection is live", async () => {
+		await execAsyncRemote("srv-live", "true");
+		const from = stdins.length;
+		const busy = Array.from({ length: 8 }, () =>
+			execAsyncRemote("srv-live", "sleep 1.5"),
+		);
+		// Every channel of the live connection is open before the next login fails.
+		while (stdins.length - from < 8)
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		rejectNextLogin = true;
+		await expect(execAsyncRemote("srv-live", "true")).rejects.toThrow(
+			/Authentication failed/,
+		);
+		const { stdout } = await execAsyncRemote("srv-live", "echo still-served");
+		expect(stdout).toBe("still-served\n");
+		await Promise.all(busy);
 	});
 
 	it("leaves a reachable server's logins pooled", async () => {
