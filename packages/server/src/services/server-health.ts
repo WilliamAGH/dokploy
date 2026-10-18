@@ -153,11 +153,17 @@ type DockerNetworkInspect = {
 
 // One remote command instead of a Docker API channel per network. `--verbose`
 // on overlay networks lists containers swarm-wide, matching the API's verbose flag.
+// A network removed between `ls` and `inspect` (a deploy tearing down a stack) is
+// skipped; any other inspect error still fails the script.
 const NETWORK_INSPECT_SCRIPT = `set -e
+inspect() {
+	err=$(docker network inspect "$@" 2>&1 >&3) && return 0
+	if printf '%s\\n' "$err" | grep -v 'No such network' >&2; then return 1; fi
+} 3>&1
 bridge=$(docker network ls -q --filter driver=bridge)
 overlay=$(docker network ls -q --filter driver=overlay)
-if [ -n "$bridge" ]; then docker network inspect --format '{{json .}}' $bridge; fi
-if [ -n "$overlay" ]; then docker network inspect --verbose --format '{{json .}}' $overlay; fi`;
+if [ -n "$bridge" ]; then inspect --format '{{json .}}' $bridge; fi
+if [ -n "$overlay" ]; then inspect --verbose --format '{{json .}}' $overlay; fi`;
 
 // Includes reserved networks like dokploy-network, which are excluded from the `network` table/UI.
 const getNetworksIpUsage = async (
