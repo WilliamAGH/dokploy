@@ -79,8 +79,12 @@ const recordConnectFailure = (key: string, error: Error, startedAt: number) => {
 	// A login started before the last recorded failure overlapped it (one burst, one
 	// outage), so it adds no count: a cold burst of N callers is one attempt, not N/8.
 	if (prior && prior.at > startedAt) return;
+	// Measured from when the park expired, so a capped park reaches its next failure
+	// inside the window instead of collapsing back to the first rung.
 	const failures =
-		(prior && now - prior.at < CONNECT_BACKOFF_MAX_MS ? prior.failures : 0) + 1;
+		(prior && now - Math.max(prior.at, prior.retryAt) < CONNECT_BACKOFF_MAX_MS
+			? prior.failures
+			: 0) + 1;
 	if (failures < 2) {
 		connectFailures.set(key, { failures, at: now, retryAt: 0, error });
 		return;
