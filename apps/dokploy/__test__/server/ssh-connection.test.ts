@@ -30,7 +30,6 @@ const hostKey = utils.generateKeyPairSync("ed25519");
 const clientKey = utils.generateKeyPairSync("ed25519");
 let connections = 0;
 let refuseNextSession = false;
-let rejectNextLogin = false;
 let sessionDelayMs = 0;
 const execs: string[] = [];
 const stdins: string[] = [];
@@ -71,11 +70,7 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 	connections++;
 	clients.add(client);
 	client.on("close", () => clients.delete(client));
-	const refuseLogin = rejectNextLogin;
-	rejectNextLogin = false;
-	client.on("authentication", (ctx) =>
-		refuseLogin ? ctx.reject() : ctx.accept(),
-	);
+	client.on("authentication", (ctx) => ctx.accept());
 	client.on("ready", () => {
 		client.on("session", async (accept, reject) => {
 			if (refuseNextSession) {
@@ -290,7 +285,7 @@ describe("execAsync on the local host", () => {
 });
 
 describe("a server that cannot complete a login", () => {
-	it("costs one connection attempt per backoff window, then retries", async () => {
+	it("retries a single failed login at once, then costs one attempt per backoff window", async () => {
 		let attempts = 0;
 		const dead = net.createServer((socket) => {
 			attempts++;
@@ -310,13 +305,14 @@ describe("a server that cannot complete a login", () => {
 					/SSH connection error/,
 				);
 			}
-			expect(attempts).toBe(1);
+			// The second consecutive failure parks it; the old pool made five attempts.
+			expect(attempts).toBe(2);
 			// Past the first window's 30 s ceiling.
 			vi.setSystemTime(Date.now() + 31_000);
 			await expect(execAsyncRemote("srv-dead", "true")).rejects.toThrow(
 				/SSH connection error/,
 			);
-			expect(attempts).toBe(2);
+			expect(attempts).toBe(3);
 		} finally {
 			vi.useRealTimers();
 			mocks.findServerById.mockImplementation(async (serverId: string) =>
@@ -326,22 +322,88 @@ describe("a server that cannot complete a login", () => {
 		}
 	});
 
-	it("does not park a server whose other connection is live", async () => {
-		await execAsyncRemote("srv-live", "true");
-		const from = stdins.length;
-		const busy = Array.from({ length: 8 }, () =>
-			execAsyncRemote("srv-live", "sleep 1.5"),
+	it("gives the next caller a fresh login after one dropped handshake", async () => {
+		let attempts = 0;
+		// Drops the first login, then relays every later one to the real server.
+		const flaky = net.createServer((socket) => {
+			attempts++;
+			if (attempts === 1) {
+				socket.destroy();
+				return;
+			}
+			const upstream = net.connect(port, "127.0.0.1");
+			socket.pipe(upstream).pipe(socket);
+			socket.on("error", () => upstream.destroy());
+			upstream.on("error", () => socket.destroy());
+		});
+		await new Promise<void>((resolve) => flaky.listen(0, "127.0.0.1", resolve));
+		const flakyPort = (flaky.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-flaky"
+				? { ...serverRow(serverId), port: flakyPort }
+				: serverRow(serverId),
 		);
-		// Every channel of the live connection is open before the next login fails.
-		while (stdins.length - from < 8)
-			await new Promise((resolve) => setTimeout(resolve, 20));
-		rejectNextLogin = true;
-		await expect(execAsyncRemote("srv-live", "true")).rejects.toThrow(
-			/Authentication failed/,
+		try {
+			await expect(execAsyncRemote("srv-flaky", "true")).rejects.toThrow(
+				/SSH connection error/,
+			);
+			const { stdout } = await execAsyncRemote("srv-flaky", "echo back");
+			expect(stdout.trim()).toBe("back");
+			expect(attempts).toBe(2);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			for (const client of clients) client.end();
+			await new Promise<void>((resolve) => flaky.close(() => resolve()));
+		}
+	});
+
+	it("never parks a server beside its live login", async () => {
+		let attempts = 0;
+		// Relays the first login, drops the next two, relays every later one.
+		const relay = net.createServer((socket) => {
+			attempts++;
+			if (attempts === 2 || attempts === 3) {
+				socket.destroy();
+				return;
+			}
+			const upstream = net.connect(port, "127.0.0.1");
+			socket.pipe(upstream).pipe(socket);
+			socket.on("error", () => upstream.destroy());
+			upstream.on("error", () => socket.destroy());
+		});
+		await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+		const relayPort = (relay.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-relay"
+				? { ...serverRow(serverId), port: relayPort }
+				: serverRow(serverId),
 		);
-		const { stdout } = await execAsyncRemote("srv-live", "echo still-served");
-		expect(stdout).toBe("still-served\n");
-		await Promise.all(busy);
+		try {
+			await execAsyncRemote("srv-relay", "true");
+			const from = stdins.length;
+			const busy = Array.from({ length: 8 }, () =>
+				execAsyncRemote("srv-relay", "sleep 1.5"),
+			);
+			// Every channel of the live login is open before the next logins drop.
+			while (stdins.length - from < 8)
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			for (let i = 0; i < 2; i++)
+				await expect(execAsyncRemote("srv-relay", "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			const { stdout } = await execAsyncRemote("srv-relay", "echo still-served");
+			expect(stdout).toBe("still-served\n");
+			expect(attempts).toBe(4);
+			await Promise.all(busy);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			for (const client of clients) client.end();
+			await new Promise<void>((resolve) => relay.close(() => resolve()));
+		}
 	});
 
 	it("leaves a reachable server's logins pooled", async () => {

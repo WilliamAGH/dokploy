@@ -54,10 +54,26 @@ interface ConnectFailure {
 // Keyed like the pool, so a changed address, user or key retries at once.
 const connectFailures = new Map<string, ConnectFailure>();
 
+// Only an unreachable server is parked: an authentication failure is fast, and a fixed
+// authorized_keys must take effect at once.
+const PARKED_LEVELS = new Set([
+	"client-timeout",
+	"client-socket",
+	"client-dns",
+]);
+
+// The first failure parks nothing, so a single lost handshake still gets the fresh
+// login retryTransientDockerRead's next attempt relies on; consecutive failures park.
 const recordConnectFailure = (key: string, error: Error) => {
+	if (!PARKED_LEVELS.has((error as Error & { level?: string }).level ?? ""))
+		return;
 	const failures = (connectFailures.get(key)?.failures ?? 0) + 1;
+	if (failures < 2) {
+		connectFailures.set(key, { failures, retryAt: 0, error });
+		return;
+	}
 	const ceiling = Math.min(
-		CONNECT_BACKOFF_BASE_MS * 2 ** (failures - 1),
+		CONNECT_BACKOFF_BASE_MS * 2 ** (failures - 2),
 		CONNECT_BACKOFF_MAX_MS,
 	);
 	const delay = ceiling / 2 + Math.random() * (ceiling / 2);
