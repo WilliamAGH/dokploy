@@ -69,13 +69,16 @@ const isUnreachable = (error: Error & { level?: string }) =>
 // login retryTransientDockerRead's next attempt relies on; a second failure inside
 // the longest window parks. Any answer from the server (an authentication refusal)
 // clears the count.
-const recordConnectFailure = (key: string, error: Error) => {
+const recordConnectFailure = (key: string, error: Error, startedAt: number) => {
 	if (!isUnreachable(error)) {
 		connectFailures.delete(key);
 		return;
 	}
 	const now = Date.now();
 	const prior = connectFailures.get(key);
+	// A login started before the last recorded failure overlapped it (one burst, one
+	// outage), so it adds no count: a cold burst of N callers is one attempt, not N/8.
+	if (prior && prior.at > startedAt) return;
 	// Measured from when the park expired, so a capped park reaches its next failure
 	// inside the window instead of collapsing back to the first rung.
 	const failures =
@@ -122,17 +125,37 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 	};
 	// Only a login that never became ready parks the target; a later error on a live
 	// connection just drops it, and the next caller reconnects at once.
+	const startedAt = Date.now();
 	entry.ready = new Promise((resolve, reject) => {
+		let settled = false;
 		const fail = (error: Error) => {
+			if (settled) return;
+			settled = true;
 			// A login failing beside a live connection to the same target is transient (sshd
 			// MaxStartups, a dropped handshake); parking would refuse callers the live one cannot take.
 			const reachable = (pools.get(key) ?? []).some((e) => e.live && !e.closed);
-			if (!reachable) recordConnectFailure(key, error);
+			if (!reachable) recordConnectFailure(key, error, startedAt);
 			reject(error);
 		};
+		// ssh2 ends without an `error` when the server hangs up after its banner but
+		// before the login finishes; without this every caller waiting on `ready` hangs.
+		// ssh2 also leaves its own side of that socket open; destroying it frees the descriptor.
+		const lost = () => {
+			fail(
+				Object.assign(new Error("Connection lost before login"), {
+					level: "client-socket",
+				}),
+			);
+			client.destroy();
+		};
 		client.once("error", fail);
+		client.once("end", lost);
+		client.once("close", lost);
 		client.once("ready", () => {
+			settled = true;
 			client.off("error", fail);
+			client.off("end", lost);
+			client.off("close", lost);
 			entry.live = true;
 			connectFailures.delete(key);
 			resolve();

@@ -1,7 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import type { Writable } from "node:stream";
 import { findServerById } from "@dokploy/server/services/server";
-import { quote } from "shell-quote";
 import type { ClientChannel } from "ssh2";
 import {
 	channelExitText,
@@ -225,9 +224,25 @@ export const execAsyncRemote = async (
 				stderr += data.toString();
 				onData?.(data.toString());
 			});
+		// An unowned channel `error` is fatal to the process; it fails this command instead.
+		channel.on("error", (error: Error) =>
+			reject(
+				new ExecError(`Remote command failed: ${error.message}`, {
+					command,
+					stdout,
+					stderr,
+					serverId,
+					originalError: error,
+				}),
+			),
+		);
 		channel.end(command);
 	});
 };
+
+// shell-quote 1.8.3 double-quotes a path holding both ' and !, writing `\!`, so a
+// remote file named `it's live!.yml` would land under another name.
+const shellLiteral = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
 
 export const writeFileRemote = async (
 	serverId: string,
@@ -255,7 +270,7 @@ export const writeFileRemote = async (
 				username: server.username,
 				privateKey: server.sshKey.privateKey,
 			},
-			`cat > ${quote([remotePath])}`,
+			`cat > ${shellLiteral(remotePath)}`,
 		);
 	} catch (error) {
 		const err = error as Error;
@@ -277,6 +292,9 @@ export const writeFileRemote = async (
 		});
 		// `cat` prints nothing, but an unread stdout would hold the channel open.
 		channel.resume();
+		channel.on("error", (error: Error) =>
+			reject(fail(`Failed to write remote file ${remotePath}: ${error.message}`, error)),
+		);
 		channel.end(content);
 	});
 };
