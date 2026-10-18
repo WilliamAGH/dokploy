@@ -322,6 +322,41 @@ describe("a server that cannot complete a login", () => {
 		}
 	});
 
+	it("counts a failure older than the longest window as a first one", async () => {
+		let attempts = 0;
+		const dead = net.createServer((socket) => {
+			attempts++;
+			socket.destroy();
+		});
+		await new Promise<void>((resolve) => dead.listen(0, "127.0.0.1", resolve));
+		const deadPort = (dead.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-stale"
+				? { ...serverRow(serverId), port: deadPort }
+				: serverRow(serverId),
+		);
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const fails = () =>
+				expect(execAsyncRemote("srv-stale", "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			await fails();
+			vi.setSystemTime(Date.now() + 16 * 60_000);
+			// A first failure again: it parks nothing, so the next call still dials.
+			await fails();
+			await fails();
+			await fails();
+			expect(attempts).toBe(3);
+		} finally {
+			vi.useRealTimers();
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			await new Promise<void>((resolve) => dead.close(() => resolve()));
+		}
+	});
+
 	it("gives the next caller a fresh login after one dropped handshake", async () => {
 		let attempts = 0;
 		// Drops the first login, then relays every later one to the real server.
@@ -393,7 +428,10 @@ describe("a server that cannot complete a login", () => {
 				await expect(execAsyncRemote("srv-relay", "true")).rejects.toThrow(
 					/SSH connection error/,
 				);
-			const { stdout } = await execAsyncRemote("srv-relay", "echo still-served");
+			const { stdout } = await execAsyncRemote(
+				"srv-relay",
+				"echo still-served",
+			);
 			expect(stdout).toBe("still-served\n");
 			expect(attempts).toBe(4);
 			await Promise.all(busy);

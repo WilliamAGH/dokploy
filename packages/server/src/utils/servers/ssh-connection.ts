@@ -47,6 +47,7 @@ const pools = new Map<string, PooledConnection[]>();
 
 interface ConnectFailure {
 	failures: number;
+	at: number;
 	retryAt: number;
 	error: Error;
 }
@@ -55,21 +56,30 @@ interface ConnectFailure {
 const connectFailures = new Map<string, ConnectFailure>();
 
 // Only an unreachable server is parked: an authentication failure is fast, and a fixed
-// authorized_keys must take effect at once.
-const PARKED_LEVELS = new Set([
-	"client-timeout",
-	"client-socket",
-	"client-dns",
-]);
+// authorized_keys must take effect at once. ssh2 tags a server that closes the socket
+// before its banner (sshd MaxStartups, a port that accepts then drops) as "protocol".
+const isUnreachable = (error: Error & { level?: string }) =>
+	error.level === "client-timeout" ||
+	error.level === "client-socket" ||
+	error.level === "client-dns" ||
+	(error.level === "protocol" &&
+		error.message === "Connection lost before handshake");
 
 // The first failure parks nothing, so a single lost handshake still gets the fresh
-// login retryTransientDockerRead's next attempt relies on; consecutive failures park.
+// login retryTransientDockerRead's next attempt relies on; a second failure inside
+// the longest window parks. Any answer from the server (an authentication refusal)
+// clears the count.
 const recordConnectFailure = (key: string, error: Error) => {
-	if (!PARKED_LEVELS.has((error as Error & { level?: string }).level ?? ""))
+	if (!isUnreachable(error)) {
+		connectFailures.delete(key);
 		return;
-	const failures = (connectFailures.get(key)?.failures ?? 0) + 1;
+	}
+	const now = Date.now();
+	const prior = connectFailures.get(key);
+	const failures =
+		(prior && now - prior.at < CONNECT_BACKOFF_MAX_MS ? prior.failures : 0) + 1;
 	if (failures < 2) {
-		connectFailures.set(key, { failures, retryAt: 0, error });
+		connectFailures.set(key, { failures, at: now, retryAt: 0, error });
 		return;
 	}
 	const ceiling = Math.min(
@@ -77,7 +87,7 @@ const recordConnectFailure = (key: string, error: Error) => {
 		CONNECT_BACKOFF_MAX_MS,
 	);
 	const delay = ceiling / 2 + Math.random() * (ceiling / 2);
-	connectFailures.set(key, { failures, retryAt: Date.now() + delay, error });
+	connectFailures.set(key, { failures, at: now, retryAt: now + delay, error });
 };
 
 // A changed address, user or key gets its own connection instead of reusing a stale one.
