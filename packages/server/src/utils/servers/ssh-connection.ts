@@ -47,6 +47,9 @@ const pools = new Map<string, PooledConnection[]>();
 
 interface ConnectFailure {
 	failures: number;
+	// Bumped on every counted failure, so a login can tell whether one was
+	// recorded while it was dialing; milliseconds cannot, as a burst shares one.
+	seq: number;
 	at: number;
 	retryAt: number;
 	error: Error;
@@ -69,16 +72,20 @@ const isUnreachable = (error: Error & { level?: string }) =>
 // login retryTransientDockerRead's next attempt relies on; a second failure inside
 // the longest window parks. Any answer from the server (an authentication refusal)
 // clears the count.
-const recordConnectFailure = (key: string, error: Error, startedAt: number) => {
+const recordConnectFailure = (
+	key: string,
+	error: Error,
+	seqAtStart: number | undefined,
+) => {
 	if (!isUnreachable(error)) {
 		connectFailures.delete(key);
 		return;
 	}
 	const now = Date.now();
 	const prior = connectFailures.get(key);
-	// A login started before the last recorded failure overlapped it (one burst, one
+	// A failure recorded while this login was dialing overlapped it (one burst, one
 	// outage), so it adds no count: a cold burst of N callers is one attempt, not N/8.
-	if (prior && prior.at > startedAt) return;
+	if (prior && prior.seq !== seqAtStart) return;
 	// Measured from when the park expired, so a capped park reaches its next failure
 	// inside the window instead of collapsing back to the first rung.
 	const failures =
@@ -86,7 +93,13 @@ const recordConnectFailure = (key: string, error: Error, startedAt: number) => {
 			? prior.failures
 			: 0) + 1;
 	if (failures < 2) {
-		connectFailures.set(key, { failures, at: now, retryAt: 0, error });
+		connectFailures.set(key, {
+			failures,
+			seq: (prior?.seq ?? 0) + 1,
+			at: now,
+			retryAt: 0,
+			error,
+		});
 		return;
 	}
 	const ceiling = Math.min(
@@ -94,7 +107,13 @@ const recordConnectFailure = (key: string, error: Error, startedAt: number) => {
 		CONNECT_BACKOFF_MAX_MS,
 	);
 	const delay = ceiling / 2 + Math.random() * (ceiling / 2);
-	connectFailures.set(key, { failures, at: now, retryAt: now + delay, error });
+	connectFailures.set(key, {
+		failures,
+		seq: (prior?.seq ?? 0) + 1,
+		at: now,
+		retryAt: now + delay,
+		error,
+	});
 };
 
 // A changed address, user or key gets its own connection instead of reusing a stale one.
@@ -125,7 +144,7 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 	};
 	// Only a login that never became ready parks the target; a later error on a live
 	// connection just drops it, and the next caller reconnects at once.
-	const startedAt = Date.now();
+	const seqAtStart = connectFailures.get(key)?.seq;
 	entry.ready = new Promise((resolve, reject) => {
 		let settled = false;
 		const fail = (error: Error) => {
@@ -134,7 +153,7 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 			// A login failing beside a live connection to the same target is transient (sshd
 			// MaxStartups, a dropped handshake); parking would refuse callers the live one cannot take.
 			const reachable = (pools.get(key) ?? []).some((e) => e.live && !e.closed);
-			if (!reachable) recordConnectFailure(key, error, startedAt);
+			if (!reachable) recordConnectFailure(key, error, seqAtStart);
 			reject(error);
 		};
 		// ssh2 ends without an `error` when the server hangs up after its banner but
