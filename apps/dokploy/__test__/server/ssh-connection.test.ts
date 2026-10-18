@@ -272,7 +272,7 @@ describe("execAsync on the local host", () => {
 });
 
 describe("a server that cannot complete a login", () => {
-	it("costs one connection attempt per backoff window, then retries", async () => {
+	it("retries a single failed login at once, then costs one attempt per backoff window", async () => {
 		let attempts = 0;
 		const dead = net.createServer((socket) => {
 			attempts++;
@@ -292,19 +292,57 @@ describe("a server that cannot complete a login", () => {
 					/SSH connection error/,
 				);
 			}
-			expect(attempts).toBe(1);
+			// The second consecutive failure parks it; the old pool made five attempts.
+			expect(attempts).toBe(2);
 			// Past the first window's 30 s ceiling.
 			vi.setSystemTime(Date.now() + 31_000);
 			await expect(execAsyncRemote("srv-dead", "true")).rejects.toThrow(
 				/SSH connection error/,
 			);
-			expect(attempts).toBe(2);
+			expect(attempts).toBe(3);
 		} finally {
 			vi.useRealTimers();
 			mocks.findServerById.mockImplementation(async (serverId: string) =>
 				serverRow(serverId),
 			);
 			await new Promise<void>((resolve) => dead.close(() => resolve()));
+		}
+	});
+
+	it("gives the next caller a fresh login after one dropped handshake", async () => {
+		let attempts = 0;
+		// Drops the first login, then relays every later one to the real server.
+		const flaky = net.createServer((socket) => {
+			attempts++;
+			if (attempts === 1) {
+				socket.destroy();
+				return;
+			}
+			const upstream = net.connect(port, "127.0.0.1");
+			socket.pipe(upstream).pipe(socket);
+			socket.on("error", () => upstream.destroy());
+			upstream.on("error", () => socket.destroy());
+		});
+		await new Promise<void>((resolve) => flaky.listen(0, "127.0.0.1", resolve));
+		const flakyPort = (flaky.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-flaky"
+				? { ...serverRow(serverId), port: flakyPort }
+				: serverRow(serverId),
+		);
+		try {
+			await expect(execAsyncRemote("srv-flaky", "true")).rejects.toThrow(
+				/SSH connection error/,
+			);
+			const { stdout } = await execAsyncRemote("srv-flaky", "echo back");
+			expect(stdout.trim()).toBe("back");
+			expect(attempts).toBe(2);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			for (const client of clients) client.end();
+			await new Promise<void>((resolve) => flaky.close(() => resolve()));
 		}
 	});
 
