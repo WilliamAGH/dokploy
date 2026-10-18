@@ -22,6 +22,7 @@ vi.mock("@dokploy/server/services/server", () => ({
 }));
 
 const MARKER = "SECRET-MARKER-123";
+const DROP = "DROP-CONNECTION-MID-COMMAND";
 
 // A real SSH server that records what reaches it: connections, exec request text,
 // and the bytes each channel receives on stdin.
@@ -92,6 +93,10 @@ const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
 				});
 				channel.on("end", () => {
 					stdins.push(stdin);
+					if (stdin.includes(DROP)) {
+						client.end();
+						return;
+					}
 					runExec(info.command, stdin, channel);
 				});
 			});
@@ -152,6 +157,14 @@ describe("execAsyncRemote over a pooled SSH connection", () => {
 			exitCode: 3,
 			stdout: "before\n",
 		});
+	});
+
+	it("names a dropped connection instead of an undefined exit code", async () => {
+		const failure = execAsyncRemote("srv-drop", `echo ${DROP}`);
+		await expect(failure).rejects.toThrow(
+			/SSH connection closed before the command finished/,
+		);
+		await expect(failure).rejects.not.toThrow(/undefined/);
 	});
 
 	it("keeps the script, and any credential in it, out of the exec request", async () => {
@@ -343,6 +356,53 @@ describe("a server that cannot complete a login", () => {
 			);
 			for (const client of clients) client.end();
 			await new Promise<void>((resolve) => flaky.close(() => resolve()));
+		}
+	});
+
+	it("never parks a server beside its live login", async () => {
+		let attempts = 0;
+		// Relays the first login, drops the next two, relays every later one.
+		const relay = net.createServer((socket) => {
+			attempts++;
+			if (attempts === 2 || attempts === 3) {
+				socket.destroy();
+				return;
+			}
+			const upstream = net.connect(port, "127.0.0.1");
+			socket.pipe(upstream).pipe(socket);
+			socket.on("error", () => upstream.destroy());
+			upstream.on("error", () => socket.destroy());
+		});
+		await new Promise<void>((resolve) => relay.listen(0, "127.0.0.1", resolve));
+		const relayPort = (relay.address() as AddressInfo).port;
+		mocks.findServerById.mockImplementation(async (serverId: string) =>
+			serverId === "srv-relay"
+				? { ...serverRow(serverId), port: relayPort }
+				: serverRow(serverId),
+		);
+		try {
+			await execAsyncRemote("srv-relay", "true");
+			const from = stdins.length;
+			const busy = Array.from({ length: 8 }, () =>
+				execAsyncRemote("srv-relay", "sleep 1.5"),
+			);
+			// Every channel of the live login is open before the next logins drop.
+			while (stdins.length - from < 8)
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			for (let i = 0; i < 2; i++)
+				await expect(execAsyncRemote("srv-relay", "true")).rejects.toThrow(
+					/SSH connection error/,
+				);
+			const { stdout } = await execAsyncRemote("srv-relay", "echo still-served");
+			expect(stdout).toBe("still-served\n");
+			expect(attempts).toBe(4);
+			await Promise.all(busy);
+		} finally {
+			mocks.findServerById.mockImplementation(async (serverId: string) =>
+				serverRow(serverId),
+			);
+			for (const client of clients) client.end();
+			await new Promise<void>((resolve) => relay.close(() => resolve()));
 		}
 	});
 

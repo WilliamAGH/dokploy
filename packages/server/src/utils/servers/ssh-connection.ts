@@ -39,6 +39,7 @@ interface PooledConnection {
 	ready: Promise<void>;
 	channels: number;
 	closed: boolean;
+	live: boolean;
 	idleTimer?: NodeJS.Timeout;
 }
 
@@ -96,6 +97,7 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 		ready: Promise.resolve(),
 		channels: 0,
 		closed: false,
+		live: false,
 	};
 	const drop = () => {
 		entry.closed = true;
@@ -108,12 +110,16 @@ const connect = (key: string, target: SshTarget): PooledConnection => {
 	// connection just drops it, and the next caller reconnects at once.
 	entry.ready = new Promise((resolve, reject) => {
 		const fail = (error: Error) => {
-			recordConnectFailure(key, error);
+			// A login failing beside a live connection to the same target is transient (sshd
+			// MaxStartups, a dropped handshake); parking would refuse callers the live one cannot take.
+			const reachable = (pools.get(key) ?? []).some((e) => e.live && !e.closed);
+			if (!reachable) recordConnectFailure(key, error);
 			reject(error);
 		};
 		client.once("error", fail);
 		client.once("ready", () => {
 			client.off("error", fail);
+			entry.live = true;
 			connectFailures.delete(key);
 			resolve();
 		});
@@ -213,6 +219,15 @@ const execOnce = async (target: SshTarget, command: string) => {
  * retried once on a fresh connection; connection and authentication errors
  * propagate unchanged.
  */
+// ssh2 closes a channel with no exit status when its connection drops mid-command,
+// and with a signal name instead of a code when the remote command was killed.
+export const channelExitText = (code?: number | null, signal?: string) =>
+	typeof code === "number"
+		? `exit code ${code}`
+		: signal
+			? `signal ${signal}`
+			: "the SSH connection closed before the command finished";
+
 export const openExecChannel = async (
 	target: SshTarget,
 	command: string,
