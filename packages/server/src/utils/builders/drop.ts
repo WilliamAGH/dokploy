@@ -14,6 +14,7 @@ import { execAsyncRemote } from "../process/execAsync";
 
 export const unzipDrop = async (zipFile: File, application: Application) => {
 	let sftp: SFTPWrapper | null = null;
+	let conn: Client | null = null;
 
 	try {
 		const { appName } = application;
@@ -50,7 +51,7 @@ export const unzipDrop = async (zipFile: File, application: Application) => {
 			: "";
 
 		if (targetServerId) {
-			sftp = await getSFTPConnection(targetServerId);
+			({ conn, sftp } = await getSFTPConnection(targetServerId));
 		}
 		for (const entry of zipEntries) {
 			let filePath = entry.entryName;
@@ -104,10 +105,13 @@ export const unzipDrop = async (zipFile: File, application: Application) => {
 		throw error;
 	} finally {
 		sftp?.end();
+		conn?.end();
 	}
 };
 
-const getSFTPConnection = async (serverId: string): Promise<SFTPWrapper> => {
+const getSFTPConnection = async (
+	serverId: string,
+): Promise<{ conn: Client; sftp: SFTPWrapper }> => {
 	const server = await findServerById(serverId);
 	if (!server.sshKeyId) throw new Error("No SSH key available for this server");
 
@@ -116,10 +120,15 @@ const getSFTPConnection = async (serverId: string): Promise<SFTPWrapper> => {
 		conn
 			.on("ready", () => {
 				conn.sftp((err, sftp) => {
-					if (err) return reject(err);
-					resolve(sftp);
+					if (err) {
+						conn.end();
+						return reject(err);
+					}
+					resolve({ conn, sftp });
 				});
 			})
+			// Without a listener, a connection error is an uncaught 'error' event.
+			.on("error", reject)
 			.connect({
 				host: server.ipAddress,
 				port: server.port,

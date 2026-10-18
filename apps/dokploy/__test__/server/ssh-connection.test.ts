@@ -1,9 +1,14 @@
 import { spawn } from "node:child_process";
+import { mkdtemp, readFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	ExecError,
 	execAsync,
 	execAsyncRemote,
+	WriteFileRemoteError,
+	writeFileRemote,
 } from "@dokploy/server/utils/process/execAsync";
 import { getRemoteDocker } from "@dokploy/server/utils/servers/remote-docker";
 import { REMOTE_SCRIPT_RUNNER } from "@dokploy/server/utils/servers/ssh-connection";
@@ -161,6 +166,44 @@ describe("execAsyncRemote over a pooled SSH connection", () => {
 		const { stdout } = await execAsyncRemote("srv-retry", "echo recovered");
 		expect(stdout).toBe("recovered\n");
 		expect(connections - before).toBe(1);
+	});
+
+	it("reuses an idle connection for a once-a-minute caller", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const before = connections;
+			await execAsyncRemote("srv-idle", "true");
+			vi.advanceTimersByTime(60_000);
+			await execAsyncRemote("srv-idle", "true");
+			expect(connections - before).toBe(1);
+			vi.advanceTimersByTime(150_000);
+			await execAsyncRemote("srv-idle", "true");
+			expect(connections - before).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("writeFileRemote over a pooled SSH connection", () => {
+	it("writes the content to a path that needs quoting, on the pooled login", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "write-remote-"));
+		const target = join(dir, "it's a file.yml");
+		await execAsyncRemote("srv-write", "true");
+		const before = connections;
+		await writeFileRemote("srv-write", target, `http:\n  ${MARKER}\n`);
+		expect(await readFile(target, "utf8")).toBe(`http:\n  ${MARKER}\n`);
+		expect(connections - before).toBe(0);
+	});
+
+	it("rejects with the remote error when the file cannot be written", async () => {
+		const failure = writeFileRemote(
+			"srv-write",
+			"/nonexistent-dir/file.yml",
+			"x",
+		);
+		await expect(failure).rejects.toBeInstanceOf(WriteFileRemoteError);
+		await expect(failure).rejects.toThrow(/nonexistent-dir/);
 	});
 });
 

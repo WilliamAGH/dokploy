@@ -144,6 +144,7 @@ export const serverValidate = async (serverId: string) => {
         `;
 				client.exec(bashCommand, (err, stream) => {
 					if (err) {
+						client.end();
 						reject(err);
 						return;
 					}

@@ -12,7 +12,6 @@ import {
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull } from "drizzle-orm";
 import { IS_CLOUD } from "../constants";
-import { getRemoteDocker } from "../utils/servers/remote-docker";
 import { getInotifyUsage, type InotifyUsage } from "./inotify";
 
 export interface NetworkIpUsage {
@@ -145,61 +144,52 @@ export const getSubnetCapacity = (
 	return 2 ** hostBits - 2;
 };
 
-type DockerNetworkSummary = {
+type DockerNetworkInspect = {
 	Name: string;
 	Driver: string;
 	IPAM?: { Config?: Array<{ Subnet?: string }> | null };
+	Containers?: Record<string, unknown>;
 };
 
-type InspectableNetwork = {
-	inspect: (opts?: { verbose?: boolean }) => Promise<{
-		Containers?: Record<string, unknown>;
-	}>;
-};
+// One remote command instead of a Docker API channel per network. `--verbose`
+// on overlay networks lists containers swarm-wide, matching the API's verbose flag.
+const NETWORK_INSPECT_SCRIPT = `set -e
+bridge=$(docker network ls -q --filter driver=bridge)
+overlay=$(docker network ls -q --filter driver=overlay)
+if [ -n "$bridge" ]; then docker network inspect --format '{{json .}}' $bridge; fi
+if [ -n "$overlay" ]; then docker network inspect --verbose --format '{{json .}}' $overlay; fi`;
 
 // Includes reserved networks like dokploy-network, which are excluded from the `network` table/UI.
 const getNetworksIpUsage = async (
 	serverId: string | undefined,
 ): Promise<NetworkIpUsage[]> => {
-	const docker = await getRemoteDocker(serverId);
-	const dockerNetworks =
-		(await docker.listNetworks()) as DockerNetworkSummary[];
-	const relevant = dockerNetworks.filter(
-		(n) => n.Driver === "bridge" || n.Driver === "overlay",
-	);
+	const { stdout } = serverId
+		? await execAsyncRemote(serverId, NETWORK_INSPECT_SCRIPT)
+		: await execAsync(NETWORK_INSPECT_SCRIPT);
+	const networks = stdout
+		.split("\n")
+		.filter((line) => line.trim())
+		.map((line) => JSON.parse(line) as DockerNetworkInspect);
 
-	const rows = await Promise.all(
-		relevant.map(async (n): Promise<NetworkIpUsage> => {
-			// IPv4 entry specifically: dual-stack networks list an IPv6 config too, and it may come first.
-			const subnet = n.IPAM?.Config?.find(
-				(c) => c.Subnet && !c.Subnet.includes(":"),
-			)?.Subnet;
-			const capacity = getSubnetCapacity(subnet);
-			let containersInUse = 0;
-			try {
-				// Cast the object (not the detached method) so `net.inspect(...)` stays a bound method call.
-				const net = docker.getNetwork(n.Name) as unknown as InspectableNetwork;
-				// verbose: true for full swarm-wide container list on overlay networks
-				const info = await net.inspect(
-					n.Driver === "overlay" ? { verbose: true } : undefined,
-				);
-				containersInUse = Object.keys(info.Containers ?? {}).length;
-			} catch {
-				// Network may have disappeared between list and inspect; report 0
-			}
-			return {
-				name: n.Name,
-				driver: n.Driver,
-				subnet: subnet ?? null,
-				containersInUse,
-				capacity,
-				percentUsed:
-					capacity && capacity > 0
-						? Math.round((containersInUse / capacity) * 100)
-						: null,
-			};
-		}),
-	);
+	const rows = networks.map((n): NetworkIpUsage => {
+		// IPv4 entry specifically: dual-stack networks list an IPv6 config too, and it may come first.
+		const subnet = n.IPAM?.Config?.find(
+			(c) => c.Subnet && !c.Subnet.includes(":"),
+		)?.Subnet;
+		const capacity = getSubnetCapacity(subnet);
+		const containersInUse = Object.keys(n.Containers ?? {}).length;
+		return {
+			name: n.Name,
+			driver: n.Driver,
+			subnet: subnet ?? null,
+			containersInUse,
+			capacity,
+			percentUsed:
+				capacity && capacity > 0
+					? Math.round((containersInUse / capacity) * 100)
+					: null,
+		};
+	});
 
 	return rows.sort((a, b) => (b.percentUsed ?? -1) - (a.percentUsed ?? -1));
 };

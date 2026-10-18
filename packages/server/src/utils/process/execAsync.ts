@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import type { Writable } from "node:stream";
 import { findServerById } from "@dokploy/server/services/server";
-import { Client, type ClientChannel } from "ssh2";
+import { quote } from "shell-quote";
+import type { ClientChannel } from "ssh2";
 import {
 	openExecChannel,
 	REMOTE_SCRIPT_RUNNER,
@@ -233,56 +234,49 @@ export const writeFileRemote = async (
 	content: string,
 ): Promise<void> => {
 	const server = await findServerById(serverId);
-	if (!server.sshKeyId) throw new Error("No SSH key available for this server");
+	if (!server.sshKeyId || !server.sshKey)
+		throw new Error("No SSH key available for this server");
 
-	return new Promise((resolve, reject) => {
-		const conn = new Client();
-		conn
-			.once("ready", () => {
-				conn.sftp((err, sftp) => {
-					if (err) {
-						conn.end();
-						reject(
-							new WriteFileRemoteError(`SFTP session failed: ${err.message}`, {
-								remotePath,
-								serverId,
-								originalError: err,
-							}),
-						);
-						return;
-					}
-					sftp.writeFile(remotePath, content, (writeErr) => {
-						conn.end();
-						if (writeErr) {
-							reject(
-								new WriteFileRemoteError(
-									`Failed to write remote file ${remotePath}: ${writeErr.message}`,
-									{ remotePath, serverId, originalError: writeErr },
-								),
-							);
-							return;
-						}
-						resolve();
-					});
-				});
-			})
-			.on("error", (err) => {
-				conn.end();
-				reject(
-					new WriteFileRemoteError(`SSH connection error: ${err.message}`, {
-						remotePath,
-						serverId,
-						originalError: err,
-					}),
-				);
-			})
-			.connect({
-				host: server.ipAddress,
+	const fail = (message: string, originalError: Error) =>
+		new WriteFileRemoteError(message, {
+			remotePath,
+			serverId,
+			originalError,
+		});
+
+	let channel: ClientChannel;
+	try {
+		channel = await openExecChannel(
+			{
+				serverId,
+				ipAddress: server.ipAddress,
 				port: server.port,
 				username: server.username,
-				privateKey: server.sshKey?.privateKey,
-				timeout: 99999,
-			});
+				privateKey: server.sshKey.privateKey,
+			},
+			`cat > ${quote([remotePath])}`,
+		);
+	} catch (error) {
+		const err = error as Error;
+		throw fail(`SSH connection error: ${err.message}`, err);
+	}
+
+	let stderr = "";
+	return new Promise((resolve, reject) => {
+		channel.on("close", (code: number) => {
+			if (code === 0) {
+				resolve();
+				return;
+			}
+			const message = `Failed to write remote file ${remotePath}: ${stderr.trim() || `exit code ${code}`}`;
+			reject(fail(message, new Error(message)));
+		});
+		channel.stderr.on("data", (data: Buffer) => {
+			stderr += data.toString();
+		});
+		// `cat` prints nothing, but an unread stdout would hold the channel open.
+		channel.resume();
+		channel.end(content);
 	});
 };
 

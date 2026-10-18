@@ -7,7 +7,9 @@ import { Client, type ClientChannel } from "ssh2";
 // Every fleet server measured 10 or more on 2026-10-06.
 const MAX_CHANNELS_PER_CONNECTION = 8;
 // A connection with no open channel closes after this, so idle servers hold no session.
-const IDLE_CLOSE_MS = 30_000;
+// It outlasts the slowest periodic caller, the per-minute inotify threshold scan,
+// so that scan reuses one login instead of opening a new one each minute.
+const IDLE_CLOSE_MS = 150_000;
 
 /**
  * Runs the script that arrives on the channel's stdin. bash reads it through a
