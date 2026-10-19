@@ -250,7 +250,7 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 													<FormLabel>Select a registry</FormLabel>
 													<Select
 														onValueChange={field.onChange}
-														defaultValue={field.value}
+														value={field.value}
 													>
 														<SelectTrigger>
 															<SelectValue placeholder="Select a registry" />
