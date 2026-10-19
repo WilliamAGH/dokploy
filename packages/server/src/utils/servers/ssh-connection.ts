@@ -43,8 +43,6 @@ interface PooledConnection {
 	idleTimer?: NodeJS.Timeout;
 }
 
-const pools = new Map<string, PooledConnection[]>();
-
 interface ConnectFailure {
 	failures: number;
 	// Bumped on every counted failure, so a login can tell whether one was
@@ -55,8 +53,21 @@ interface ConnectFailure {
 	error: Error;
 }
 
+const globalForSsh = globalThis as unknown as {
+	sshPools?: Map<string, PooledConnection[]>;
+	sshConnectFailures?: Map<string, ConnectFailure>;
+};
+
+if (!globalForSsh.sshPools) {
+	globalForSsh.sshPools = new Map();
+}
+if (!globalForSsh.sshConnectFailures) {
+	globalForSsh.sshConnectFailures = new Map();
+}
+
+const pools = globalForSsh.sshPools;
 // Keyed like the pool, so a changed address, user or key retries at once.
-const connectFailures = new Map<string, ConnectFailure>();
+const connectFailures = globalForSsh.sshConnectFailures;
 
 // Only an unreachable server is parked: an authentication failure is fast, and a fixed
 // authorized_keys must take effect at once. ssh2 tags a server that closes the socket
