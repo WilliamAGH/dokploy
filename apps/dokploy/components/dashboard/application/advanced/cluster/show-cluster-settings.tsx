@@ -200,6 +200,28 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 
 						{type === "application" && (
 							<>
+								<FormField
+									control={form.control}
+									name="swarmVipConnectionReuse"
+									render={({ field }) => (
+										<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
+											<div className="space-y-0.5">
+												<FormLabel>Reuse backend connections</FormLabel>
+												<FormDescription>
+													Turn this off to open a new backend connection for
+													every request, so rolling updates never route to a
+													replaced task.
+												</FormDescription>
+											</div>
+											<FormControl>
+												<Switch
+													checked={field.value}
+													onCheckedChange={field.onChange}
+												/>
+											</FormControl>
+										</FormItem>
+									)}
+								/>
 								{registries && registries?.length === 0 ? (
 									<div className="pt-10">
 										<div className="flex flex-col items-center gap-3">
@@ -219,29 +241,6 @@ export const ShowClusterSettings = ({ id, type }: Props) => {
 									</div>
 								) : (
 									<>
-										<FormField
-											control={form.control}
-											name="swarmVipConnectionReuse"
-											render={({ field }) => (
-												<FormItem className="flex flex-row items-center justify-between rounded-lg border p-3">
-													<div className="space-y-0.5">
-														<FormLabel>Reuse backend connections</FormLabel>
-														<FormDescription>
-															Turn this off to open a new backend connection for
-															every request, so rolling updates never route to a
-															replaced task.
-														</FormDescription>
-													</div>
-													<FormControl>
-														<Switch
-															checked={field.value}
-															onCheckedChange={field.onChange}
-														/>
-													</FormControl>
-												</FormItem>
-											)}
-										/>
-
 										<FormField
 											control={form.control}
 											name="registryId"
