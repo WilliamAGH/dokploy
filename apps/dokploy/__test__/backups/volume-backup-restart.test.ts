@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { createRestartSafeBackupCommand } from "@dokploy/server/utils/volume-backups/backup";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+	createRestartSafeBackupCommand,
+	createVolumeArchiveCommand,
+} from "@dokploy/server/utils/volume-backups/backup";
 import { describe, expect, it } from "vitest";
 
 const runCommand = (command: string) =>
@@ -78,5 +84,26 @@ describe("createRestartSafeBackupCommand", () => {
 			"start",
 			"upload",
 		]);
+	});
+});
+
+describe("createVolumeArchiveCommand", () => {
+	const runArchiveWithTarExit = (tarExitCode: number) => {
+		const binDir = mkdtempSync(path.join(tmpdir(), "volume-archive-"));
+		const tarPath = path.join(binDir, "tar");
+		writeFileSync(tarPath, `#!/bin/sh\nexit ${tarExitCode}\n`);
+		chmodSync(tarPath, 0o755);
+		return spawnSync("bash", ["-c", createVolumeArchiveCommand("v.tar")], {
+			encoding: "utf8",
+			env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
+		}).status;
+	};
+
+	it("accepts files that changed while a live volume was archived", () => {
+		expect(runArchiveWithTarExit(1)).toBe(0);
+	});
+
+	it("fails on a fatal tar error", () => {
+		expect(runArchiveWithTarExit(2)).not.toBe(0);
 	});
 });

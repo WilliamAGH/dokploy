@@ -46,6 +46,11 @@ export const createRestartSafeBackupCommand = ({
 	${uploadCommand}
 `;
 
+// GNU tar exits 1 when a file changes while it is archived, which is expected
+// for a volume backed up without turning its service off; exit 2 is fatal.
+export const createVolumeArchiveCommand = (backupFileName: string) =>
+	`tar --warning=no-file-changed -C /volume_data -cvf /backup/${backupFileName} . || [ $? -eq 1 ]`;
+
 export const getVolumeServiceAppName = (
 	volumeBackup: Awaited<ReturnType<typeof findVolumeBackupById>>,
 ): string => {
@@ -93,7 +98,7 @@ export const backupVolume = async (
   -v ${volumeName}:/volume_data \
   -v ${volumeBackupPath}:/backup \
   ubuntu \
-  bash -c "cd /volume_data && tar cvf /backup/${backupFileName} ."
+  bash -c '${createVolumeArchiveCommand(backupFileName)}'
   echo "Volume backup done ✅"
   `;
 
