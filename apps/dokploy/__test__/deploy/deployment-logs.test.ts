@@ -23,6 +23,7 @@ vi.mock("@/server/queues/queueSetup", () => ({ myQueue: {} }));
 vi.mock("@/server/utils/deploy", () => ({ fetchDeployApiJobs: vi.fn() }));
 
 const { deploymentRouter } = await import("@/server/api/routers/deployment");
+const environment = { project: { organizationId: "organization-id" } };
 const caller = () =>
 	deploymentRouter.createCaller({
 		session: { activeOrganizationId: "organization-id" },
@@ -49,7 +50,7 @@ describe("deployment volume-backup logs", () => {
 			mocks.findVolumeBackupById.mockResolvedValue({
 				serviceType,
 				[`${serviceType}Id`]: "service-id",
-				[serviceType]: { serverId: "remote-server" },
+				[serviceType]: { serverId: "remote-server", environment },
 			});
 			await expect(
 				caller().readLogs({ deploymentId: "deployment-id", tail: 10000 }),
@@ -71,7 +72,7 @@ describe("deployment volume-backup logs", () => {
 		mocks.findVolumeBackupById.mockResolvedValue({
 			serviceType: "compose",
 			composeId: "other-service",
-			compose: { serverId: "other-server" },
+			compose: { serverId: "other-server", environment },
 		});
 		mocks.permission.mockRejectedValue(new Error("Service access denied"));
 		await expect(
@@ -85,7 +86,7 @@ describe("deployment volume-backup logs", () => {
 		mocks.findVolumeBackupById.mockResolvedValue({
 			serviceType: "compose",
 			composeId: "local-service",
-			compose: { serverId: null },
+			compose: { serverId: null, environment },
 		});
 		mocks.execAsync.mockResolvedValue({
 			stdout: "Local backup file cleaned up ✅\n",
@@ -95,4 +96,38 @@ describe("deployment volume-backup logs", () => {
 		).resolves.toBe("Local backup file cleaned up ✅\n");
 		expect(mocks.execAsyncRemote).not.toHaveBeenCalled();
 	});
+
+	it("refuses another organization's backup even when service permission allows an owner", async () => {
+		mocks.findVolumeBackupById.mockResolvedValue({
+			serviceType: "compose",
+			composeId: "foreign-service",
+			compose: {
+				serverId: "foreign-server",
+				environment: { project: { organizationId: "foreign-organization" } },
+			},
+		});
+		await expect(
+			caller().readLogs({ deploymentId: "deployment-id" }),
+		).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+		expect(mocks.execAsyncRemote).not.toHaveBeenCalled();
+		expect(mocks.execAsync).not.toHaveBeenCalled();
+	});
+
+	it.each(["postgres", "mysql", "mariadb", "mongo", "redis", "libsql"])(
+		"reads %s volume-backup logs where the producer writes them locally",
+		async (serviceType) => {
+			mocks.findVolumeBackupById.mockResolvedValue({
+				serviceType,
+				[`${serviceType}Id`]: "database-service",
+				[serviceType]: { serverId: "database-server", environment },
+			});
+			mocks.execAsync.mockResolvedValue({
+				stdout: "Local database backup log\n",
+			});
+			await expect(
+				caller().readLogs({ deploymentId: "deployment-id" }),
+			).resolves.toBe("Local database backup log\n");
+			expect(mocks.execAsyncRemote).not.toHaveBeenCalled();
+		},
+	);
 });

@@ -248,6 +248,16 @@ export const deploymentRouter = createTRPCRouter({
 			const volumeBackup = deployment.volumeBackupId
 				? await findVolumeBackupById(deployment.volumeBackupId)
 				: null;
+			if (
+				volumeBackup &&
+				volumeBackup[volumeBackup.serviceType]?.environment.project
+					.organizationId !== ctx.session.activeOrganizationId
+			) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You don't have access to this deployment.",
+				});
+			}
 			const serviceId =
 				deployment.applicationId ||
 				deployment.composeId ||
@@ -276,7 +286,8 @@ export const deploymentRouter = createTRPCRouter({
 				deployment.schedule?.serverId ||
 				deployment.application?.serverId ||
 				deployment.compose?.serverId ||
-				volumeBackup?.[volumeBackup.serviceType]?.serverId;
+				volumeBackup?.application?.serverId ||
+				volumeBackup?.compose?.serverId;
 			if (serverId) {
 				const { stdout } = await execAsyncRemote(serverId, command);
 				return stdout;
