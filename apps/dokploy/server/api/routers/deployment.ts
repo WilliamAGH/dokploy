@@ -7,6 +7,7 @@ import {
 	findAllDeploymentsCentralized,
 	findDeploymentById,
 	findScheduleById,
+	findVolumeBackupById,
 	IS_CLOUD,
 	removeDeployment,
 	resolveServicePath,
@@ -244,7 +245,13 @@ export const deploymentRouter = createTRPCRouter({
 		)
 		.query(async ({ input, ctx }) => {
 			const deployment = await findDeploymentById(input.deploymentId);
-			const serviceId = deployment.applicationId || deployment.composeId;
+			const volumeBackup = deployment.volumeBackupId
+				? await findVolumeBackupById(deployment.volumeBackupId)
+				: null;
+			const serviceId =
+				deployment.applicationId ||
+				deployment.composeId ||
+				(volumeBackup && volumeBackup[`${volumeBackup.serviceType}Id`]);
 			if (serviceId) {
 				await checkServicePermissionAndAccess(ctx, serviceId, {
 					deployment: ["read"],
@@ -268,7 +275,8 @@ export const deploymentRouter = createTRPCRouter({
 				deployment.serverId ||
 				deployment.schedule?.serverId ||
 				deployment.application?.serverId ||
-				deployment.compose?.serverId;
+				deployment.compose?.serverId ||
+				volumeBackup?.[volumeBackup.serviceType]?.serverId;
 			if (serverId) {
 				const { stdout } = await execAsyncRemote(serverId, command);
 				return stdout;
