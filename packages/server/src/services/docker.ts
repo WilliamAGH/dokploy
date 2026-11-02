@@ -459,26 +459,14 @@ export const getContainerLogs = async (
 		? `docker service logs --timestamps --raw --tail ${tail} ${sinceFlag} ${target}`
 		: `docker container logs --timestamps --tail ${tail} ${sinceFlag} ${target}`;
 
-	const escapedSearch = search?.replace(/'/g, "'\\''") ?? "";
-	const command = search
-		? `${baseCommand} 2>&1 | grep -iF '${escapedSearch}'`
-		: `${baseCommand} 2>&1`;
+	const { stdout } = await exec(`${baseCommand} 2>&1`);
+	if (!search) return stdout;
 
-	try {
-		const result = await exec(command);
-		return result.stdout;
-	} catch (error: unknown) {
-		if (
-			error &&
-			typeof error === "object" &&
-			"stdout" in error &&
-			typeof (error as { stdout: string }).stdout === "string" &&
-			(error as { stdout: string }).stdout.length > 0
-		) {
-			return (error as { stdout: string }).stdout;
-		}
-		throw error;
-	}
+	const needle = search.toLowerCase();
+	return stdout
+		.split(/(?<=\n)/)
+		.filter((line) => line.toLowerCase().includes(needle))
+		.join("");
 };
 
 export const containerRestart = async (

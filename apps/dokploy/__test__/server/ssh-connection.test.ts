@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { env } from "node:process";
+import { getContainerLogs } from "@dokploy/server/services/docker";
 import {
 	ExecError,
 	execAsync,
@@ -130,6 +132,41 @@ afterAll(async () => {
 });
 
 describe("execAsyncRemote over a pooled SSH connection", () => {
+	it("filters remote container logs without treating no matches as a failure", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "dokploy-remote-logs-"));
+		await writeFile(
+			join(directory, "docker"),
+			"#!/bin/sh\nprintf 'before\\nScheduler FINISHED\\n'\n",
+			{ mode: 0o755 },
+		);
+		vi.stubEnv("PATH", `${directory}:${env.PATH}`);
+		try {
+			await expect(
+				getContainerLogs(
+					"container-id",
+					20,
+					"2h",
+					"absent",
+					"srv-log-filter",
+					true,
+				),
+			).resolves.toBe("");
+			await expect(
+				getContainerLogs(
+					"container-id",
+					20,
+					"2h",
+					"finished",
+					"srv-log-filter",
+					true,
+				),
+			).resolves.toBe("Scheduler FINISHED\n");
+		} finally {
+			vi.unstubAllEnvs();
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("runs sequential commands over one login", async () => {
 		const before = connections;
 		for (let i = 0; i < 6; i++) {
