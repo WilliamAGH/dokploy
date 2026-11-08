@@ -19,20 +19,27 @@ export interface InotifyUsage {
 	error?: string;
 }
 
+const SCAN_LABEL = "dev.dokploy.inotify-scan=1";
+
 const buildCommand = (remote: boolean) => {
 	const name = `dokploy-inotify-${randomUUID()}`;
 	// The reader shares the host PID namespace because kcmp(2) resolves its
 	// process arguments in the caller's namespace; PIDs read from the bind-
 	// mounted /proc mean nothing without it. Everything else stays dropped.
+	// A daemon stalled past the run's timeout can kill the client between
+	// create and start and outlast the trap, leaving a Created container each
+	// minute; every scan therefore prunes its label's stopped containers that
+	// are old enough to belong to no live scan.
 	return `set -eu
 name=${name}
-trap 'timeout -k 2 5 docker rm -f "$name" >/dev/null 2>&1 || true' EXIT HUP INT TERM
+trap 'timeout -k 2 30 docker rm -f "$name" >/dev/null 2>&1 || true' EXIT HUP INT TERM
+timeout -k 2 10 docker container prune --force --filter label=${SCAN_LABEL} --filter until=5m >/dev/null 2>&1 || true
 security=$(timeout -k 2 10 docker info --format '{{json .SecurityOptions}}')
 case "$security" in *name=rootless*|*name=userns*) exit 2 ;; esac
 set -- --security-opt no-new-privileges
 case "$security" in *name=apparmor*) set -- "$@" --security-opt apparmor=unconfined ;; esac
 ${remote ? "printf 'execution\\t%s\\n' \"$(id -ru)\"" : ""}
-timeout -k 3 60 docker run --rm --name "$name" --pid host --network none --read-only --cap-drop ALL --cap-add SYS_PTRACE --cap-add DAC_READ_SEARCH --pids-limit 64 --memory 64m --cpus 0.5 --log-driver none --mount type=bind,src=/proc,dst=/host/proc,readonly "$@" ${getMonitoringImage()} ./main inotify-scan 2>/dev/null | head -c 65537
+timeout -k 3 60 docker run --rm --name "$name" --label ${SCAN_LABEL} --pid host --network none --read-only --cap-drop ALL --cap-add SYS_PTRACE --cap-add DAC_READ_SEARCH --pids-limit 64 --memory 64m --cpus 0.5 --log-driver none --mount type=bind,src=/proc,dst=/host/proc,readonly "$@" ${getMonitoringImage()} ./main inotify-scan 2>/dev/null | head -c 65537
 `;
 };
 
