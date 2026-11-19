@@ -28,6 +28,7 @@ import {
 	removeTraefikConfig,
 	scaleService,
 	scaleServiceRemote,
+	scheduleTraefikAcmePrune,
 	sourceRevisionLabelPlaceholder,
 	startService,
 	startServiceRemote,
@@ -425,6 +426,13 @@ export const applicationRouter = createTRPCRouter({
 				try {
 					await operation();
 				} catch (_) {}
+			}
+
+			const appHosts = application.domains.map((d) => d.host).filter(Boolean);
+			if (appHosts.length > 0) {
+				for (const target of ingressTargets(application)) {
+					scheduleTraefikAcmePrune(target.serverId, appHosts);
+				}
 			}
 
 			await audit(ctx, {

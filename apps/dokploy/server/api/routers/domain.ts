@@ -9,9 +9,11 @@ import {
 	generateTraefikMeDomain,
 	getServerIpCandidates,
 	getWebServerSettings,
+	ingressTargets,
 	manageDomain,
 	removeDomain,
 	removeDomainById,
+	scheduleTraefikAcmePrune,
 	updateDomainById,
 	validateDomain,
 } from "@dokploy/server";
@@ -240,6 +242,9 @@ export const domainRouter = createTRPCRouter({
 			if (domain.applicationId) {
 				const application = await findApplicationById(domain.applicationId);
 				await removeDomain(application, domain.uniqueConfigKey);
+				for (const target of ingressTargets(application)) {
+					scheduleTraefikAcmePrune(target.serverId, [domain.host]);
+				}
 			}
 
 			return result;

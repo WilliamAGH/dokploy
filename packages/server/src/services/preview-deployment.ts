@@ -12,6 +12,7 @@ import { generatePassword } from "../templates";
 import { removeService } from "../utils/docker/utils";
 import { removeDirectoryCode } from "../utils/filesystem/directory";
 import { authGithub } from "../utils/providers/github";
+import { scheduleTraefikAcmePrune } from "../utils/traefik/acme";
 import { removeTraefikConfig } from "../utils/traefik/application";
 import { manageDomain } from "../utils/traefik/domain";
 import { findApplicationById } from "./application";
@@ -81,6 +82,11 @@ export const removePreviewDeployment = async (previewDeploymentId: string) => {
 			} catch (error) {
 				console.error(error);
 			}
+		}
+		if (previewDeployment.domain?.host) {
+			scheduleTraefikAcmePrune(application?.serverId, [
+				previewDeployment.domain.host,
+			]);
 		}
 		return previewDeployment;
 	} catch (error) {

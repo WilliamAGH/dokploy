@@ -26,6 +26,7 @@ import {
 	paths,
 	prepareEnvironmentVariables,
 	processLogs,
+	pruneTraefikAcme,
 	readConfig,
 	readConfigInPath,
 	readDirectory,
@@ -131,6 +132,81 @@ export const settingsRouter = createTRPCRouter({
 				resourceName: "dokploy-traefik",
 			});
 			return true;
+		}),
+	pruneTraefikAcme: adminProcedure
+		.input(
+			z
+				.object({
+					serverId: z.string().optional(),
+					dryRun: z.boolean().default(false),
+					hosts: z.array(z.string().min(1)).optional(),
+				})
+				.optional(),
+		)
+		.mutation(async ({ input, ctx }) => {
+			const serverId = input?.serverId;
+			const dryRun = input?.dryRun ?? false;
+			const hosts = input?.hosts;
+
+			if (IS_CLOUD && !serverId) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not authorized to prune local Traefik ACME storage",
+				});
+			}
+
+			if (serverId) {
+				const server = await findServerById(serverId);
+				if (server.organizationId !== ctx.session.activeOrganizationId) {
+					throw new TRPCError({
+						code: "UNAUTHORIZED",
+						message: "You are not authorized to access this server",
+					});
+				}
+				const result = await pruneTraefikAcme({ serverId, dryRun, hosts });
+				if (!dryRun && result.pruned.length > 0) {
+					await audit(ctx, {
+						action: "delete",
+						resourceType: "settings",
+						resourceName: `prune-traefik-acme:${serverId}`,
+					});
+				}
+				return result;
+			}
+
+			if (dryRun) {
+				return await pruneTraefikAcme({ dryRun: true, hosts });
+			}
+
+			const preview = await pruneTraefikAcme({ dryRun: true, hosts });
+			if (preview.pruned.length === 0) {
+				return {
+					...preview,
+					dryRun: false,
+					restarted: false,
+					scheduled: false,
+				};
+			}
+
+			// Defer stopping the control-plane Traefik until after this response flushes.
+			setTimeout(() => {
+				void pruneTraefikAcme({ hosts }).catch((err) => {
+					console.error("pruneTraefikAcme background:", err);
+				});
+			}, 250);
+
+			await audit(ctx, {
+				action: "delete",
+				resourceType: "settings",
+				resourceName: "prune-traefik-acme",
+			});
+
+			return {
+				...preview,
+				dryRun: false,
+				restarted: true,
+				scheduled: true,
+			};
 		}),
 	toggleDashboard: adminProcedure
 		.input(apiEnableDashboard)

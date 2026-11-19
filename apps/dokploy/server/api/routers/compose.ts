@@ -34,6 +34,7 @@ import {
 	removeDeploymentsByComposeId,
 	removeDomainById,
 	removeVolumeFromComposeFile,
+	scheduleTraefikAcmePrune,
 	startCompose,
 	stopCompose,
 	updateCompose,
@@ -289,6 +290,13 @@ export const composeRouter = createTRPCRouter({
 				try {
 					await operation();
 				} catch (_) {}
+			}
+
+			const composeHosts = composeResult.domains
+				.map((d) => d.host)
+				.filter(Boolean);
+			if (composeHosts.length > 0) {
+				scheduleTraefikAcmePrune(composeResult.serverId, composeHosts);
 			}
 
 			await audit(ctx, {
