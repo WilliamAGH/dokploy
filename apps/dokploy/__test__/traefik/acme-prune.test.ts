@@ -1,6 +1,7 @@
 import {
 	collectActiveAcmeHosts,
 	discoverAcmeStorages,
+	normalizeHost,
 	planAcmePrune,
 	pruneTraefikAcme,
 } from "@dokploy/server/utils/traefik/acme";
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
 	findServerById: vi.fn(),
 	getAllServers: vi.fn(),
 	getDockerResourceType: vi.fn(),
+	reconnectServicesToTraefik: vi.fn(),
 }));
 
 vi.mock("@dokploy/server/utils/process/execAsync", () => ({
@@ -30,6 +32,7 @@ vi.mock("@dokploy/server/services/server", () => ({
 
 vi.mock("@dokploy/server/services/settings", () => ({
 	getDockerResourceType: mocks.getDockerResourceType,
+	reconnectServicesToTraefik: mocks.reconnectServicesToTraefik,
 }));
 
 describe("discoverAcmeStorages", () => {
@@ -68,8 +71,20 @@ describe("discoverAcmeStorages", () => {
 	});
 });
 
+describe("normalizeHost", () => {
+	it("normalizes case, trailing dots, and IDN punycode including wildcards", () => {
+		expect(normalizeHost(" App.Example.COM. ")).toBe("app.example.com");
+		expect(normalizeHost("bücher.example.com")).toBe(
+			"xn--bcher-kva.example.com",
+		);
+		expect(normalizeHost("*.bücher.example.com")).toBe(
+			"*.xn--bcher-kva.example.com",
+		);
+	});
+});
+
 describe("collectActiveAcmeHosts", () => {
-	it("extracts Host, HostSNI, tls.domains, and entrypoint fallback resolvers while skipping disabled routers", () => {
+	it("extracts Host, HostSNI, tls.domains, router.using, entrypoint defaults, and retains disabled routers", () => {
 		const active = collectActiveAcmeHosts(
 			{
 				routers: {
@@ -85,9 +100,15 @@ describe("collectActiveAcmeHosts", () => {
 						entryPoints: ["websecure"],
 						tls: {},
 					},
+					"using-default@docker": {
+						status: "enabled",
+						rule: "Host(`using-ep.example.com`)",
+						using: ["web", "websecure"],
+						tls: {},
+					},
 					"disabled-app@file": {
 						status: "disabled",
-						rule: "Host(`dead.example.com`)",
+						rule: "Host(`transient-down.example.com`)",
 						entryPoints: ["websecure"],
 						tls: { certResolver: "letsencrypt" },
 					},
@@ -129,6 +150,8 @@ describe("collectActiveAcmeHosts", () => {
 			"app.example.com",
 			"fallback.example.com",
 			"static-ep.example.com",
+			"transient-down.example.com",
+			"using-ep.example.com",
 			"www.example.com",
 		]);
 		expect(Array.from(active.get("dns01") ?? []).sort()).toEqual([
@@ -289,6 +312,7 @@ certificatesResolvers:
 		});
 		mocks.getDockerResourceType.mockResolvedValue("standalone");
 		mocks.writeFileRemote.mockResolvedValue(undefined);
+		mocks.reconnectServicesToTraefik.mockResolvedValue(undefined);
 	});
 
 	it("does not restart Traefik when zero orphans exist", async () => {
@@ -305,14 +329,15 @@ certificatesResolvers:
 		expect(mocks.writeFileRemote).not.toHaveBeenCalled();
 	});
 
-	it("stops standalone Traefik, re-reads acme.json, stages outside dynamic/ with chmod 600, and restarts", async () => {
+	it("stops standalone Traefik, pre-creates 0600 temp file outside dynamic/, writes, moves, and restarts", async () => {
 		mocks.execAsyncRemote
 			.mockResolvedValueOnce({ stdout: traefikYml, stderr: "" })
 			.mockResolvedValueOnce({ stdout: rawData, stderr: "" })
 			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" })
 			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // docker stop
 			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" }) // fresh re-read
-			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // chmod + mv + chmod
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // install -m 600
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // chmod + mv
 			.mockResolvedValueOnce({ stdout: "", stderr: "" }); // docker start
 
 		const res = await pruneTraefikAcme({ serverId: "srv-1" });
@@ -331,17 +356,22 @@ certificatesResolvers:
 		expect(commands).toContain("docker stop dokploy-traefik");
 		expect(commands).toContain("docker start dokploy-traefik");
 		expect(
+			commands.some((c) => c.startsWith("install -m 600 /dev/null ")),
+		).toBe(true);
+		expect(
 			commands.some((c) => c.includes("chmod 600") && c.includes("mv -f")),
 		).toBe(true);
 	});
 
-	it("always restarts Traefik in finally even if writing acme.json fails", async () => {
+	it("cleans up temp file and restarts Traefik in finally even if write or stop fails", async () => {
 		mocks.execAsyncRemote
 			.mockResolvedValueOnce({ stdout: traefikYml, stderr: "" })
 			.mockResolvedValueOnce({ stdout: rawData, stderr: "" })
 			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" })
 			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // docker stop
 			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" }) // fresh re-read
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // install -m 600
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // rm -f tmp
 			.mockResolvedValueOnce({ stdout: "", stderr: "" }); // docker start in finally
 		mocks.writeFileRemote.mockRejectedValueOnce(new Error("disk full"));
 
@@ -350,10 +380,32 @@ certificatesResolvers:
 		);
 
 		const commands = mocks.execAsyncRemote.mock.calls.map((c) => String(c[1]));
+		expect(commands.some((c) => c.startsWith("rm -f "))).toBe(true);
 		expect(commands.at(-1)).toBe("docker start dokploy-traefik");
+
+		// Even if docker stop rejects mid-command, finally still runs docker start.
+		vi.clearAllMocks();
+		mocks.findServerById.mockResolvedValue({
+			serverId: "srv-1",
+			ipAddress: "100.64.0.5",
+		});
+		mocks.getDockerResourceType.mockResolvedValue("standalone");
+		mocks.execAsyncRemote
+			.mockResolvedValueOnce({ stdout: traefikYml, stderr: "" })
+			.mockResolvedValueOnce({ stdout: rawData, stderr: "" })
+			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" })
+			.mockRejectedValueOnce(new Error("ssh channel dropped")) // docker stop fails
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }); // docker start in finally
+
+		await expect(pruneTraefikAcme({ serverId: "srv-1" })).rejects.toThrow(
+			"ssh channel dropped",
+		);
+		expect(
+			mocks.execAsyncRemote.mock.calls.map((c) => String(c[1])).at(-1),
+		).toBe("docker start dokploy-traefik");
 	});
 
-	it("scales Swarm Traefik to 0, prunes, and restores original replica count", async () => {
+	it("scales Swarm Traefik to 0, prunes, restores replicas, waits running, and reconnects isolated networks", async () => {
 		mocks.getDockerResourceType.mockResolvedValue("service");
 		mocks.execAsyncRemote
 			.mockResolvedValueOnce({ stdout: traefikYml, stderr: "" })
@@ -361,16 +413,32 @@ certificatesResolvers:
 			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" })
 			.mockResolvedValueOnce({ stdout: "1\n", stderr: "" }) // inspect replicas
 			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // scale 0
-			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // wait stopped (empty ps)
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // wait stopped
 			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" }) // fresh re-read
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // install -m 600
 			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // chmod + mv
-			.mockResolvedValueOnce({ stdout: "", stderr: "" }); // scale 1
+			.mockResolvedValueOnce({ stdout: "", stderr: "" }) // scale 1
+			.mockResolvedValueOnce({ stdout: "abc123\n", stderr: "" }); // wait running
 
 		const res = await pruneTraefikAcme({ serverId: "srv-1" });
 
 		expect(res.restarted).toBe(true);
 		const commands = mocks.execAsyncRemote.mock.calls.map((c) => String(c[1]));
 		expect(commands).toContain("docker service scale dokploy-traefik=0");
-		expect(commands.at(-1)).toBe("docker service scale dokploy-traefik=1");
+		expect(commands).toContain("docker service scale dokploy-traefik=1");
+		expect(mocks.reconnectServicesToTraefik).toHaveBeenCalledWith("srv-1");
+	});
+
+	it("rejects Swarm global-mode Traefik cleanly before mutating service state", async () => {
+		mocks.getDockerResourceType.mockResolvedValue("service");
+		mocks.execAsyncRemote
+			.mockResolvedValueOnce({ stdout: traefikYml, stderr: "" })
+			.mockResolvedValueOnce({ stdout: rawData, stderr: "" })
+			.mockResolvedValueOnce({ stdout: acmeWithStale, stderr: "" })
+			.mockResolvedValueOnce({ stdout: "global\n", stderr: "" });
+
+		await expect(pruneTraefikAcme({ serverId: "srv-1" })).rejects.toThrow(
+			"global mode is not supported",
+		);
 	});
 });

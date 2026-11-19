@@ -10,6 +10,7 @@ import {
 	initInotifyThresholds,
 	initializeNetwork,
 	initSchedules,
+	initTraefikAcmePruneCron,
 	initVolumeBackupsCronJobs,
 	sendDokployRestartNotifications,
 	setupDirectories,
@@ -64,6 +65,7 @@ void app.prepare().then(async () => {
 			await initializeNetwork();
 			await initCronJobs();
 			initInotifyThresholds();
+			initTraefikAcmePruneCron();
 			await initSchedules();
 			await initCancelDeployments();
 			await initVolumeBackupsCronJobs();

@@ -4,7 +4,7 @@ import {
 	execAsync,
 	execAsyncRemote,
 } from "@dokploy/server/utils/process/execAsync";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import semver from "semver";
 import { TRAEFIK_CONTAINER_NAME_FILTER } from "../constants";
@@ -515,7 +515,7 @@ export const writeTraefikSetup = async (input: TraefikOptions) => {
 export const reconnectServicesToTraefik = async (serverId?: string) => {
 	const composeResult = await db.query.compose.findMany({
 		where: and(
-			...(serverId ? [eq(compose.serverId, serverId)] : []),
+			serverId ? eq(compose.serverId, serverId) : isNull(compose.serverId),
 			eq(compose.isolatedDeployment, true),
 		),
 	});
@@ -526,7 +526,7 @@ export const reconnectServicesToTraefik = async (serverId?: string) => {
 	let commands = "";
 
 	for (const compose of composeResult) {
-		commands += `docker network connect ${compose.appName} $(docker ps --filter "${TRAEFIK_CONTAINER_NAME_FILTER}" -q) >/dev/null 2>&1\n`;
+		commands += `docker network connect ${compose.appName} $(docker ps --filter "${TRAEFIK_CONTAINER_NAME_FILTER}" -q) >/dev/null 2>&1 || true\n`;
 	}
 
 	if (serverId) {

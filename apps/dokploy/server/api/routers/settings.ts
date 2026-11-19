@@ -188,18 +188,19 @@ export const settingsRouter = createTRPCRouter({
 				};
 			}
 
-			// Defer stopping the control-plane Traefik until after this response flushes.
-			setTimeout(() => {
-				void pruneTraefikAcme({ hosts }).catch((err) => {
-					console.error("pruneTraefikAcme background:", err);
-				});
-			}, 250);
-
 			await audit(ctx, {
 				action: "delete",
 				resourceType: "settings",
 				resourceName: "prune-traefik-acme",
 			});
+
+			// Defer stopping the control-plane Traefik until after this response flushes.
+			const timer = setTimeout(() => {
+				void pruneTraefikAcme({ hosts }).catch((err) => {
+					console.error("pruneTraefikAcme background:", err);
+				});
+			}, 250);
+			timer.unref?.();
 
 			return {
 				...preview,

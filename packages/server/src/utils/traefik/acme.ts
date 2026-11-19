@@ -1,10 +1,19 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { domainToASCII } from "node:url";
+import { scheduledJobs, scheduleJob } from "node-schedule";
 import { parse } from "yaml";
-import { paths, TRAEFIK_CONTAINER_NAME_FILTER } from "../../constants";
+import {
+	IS_CLOUD,
+	paths,
+	TRAEFIK_CONTAINER_NAME_FILTER,
+} from "../../constants";
 import { findServerById, getAllServers } from "../../services/server";
-import { getDockerResourceType } from "../../services/settings";
+import {
+	getDockerResourceType,
+	reconnectServicesToTraefik,
+} from "../../services/settings";
 import {
 	execAsync,
 	execAsyncRemote,
@@ -44,6 +53,7 @@ export interface AcmePrunePlan extends TraefikAcmeStorageResult {
 interface RawRouterEntry {
 	rule?: string;
 	status?: string;
+	using?: string[];
 	entryPoints?: string[];
 	tls?: {
 		certResolver?: string;
@@ -74,17 +84,26 @@ type AcmeStoreFile = Record<
 const DEFAULT_ACME_RESOLVER = "letsencrypt";
 const DEFAULT_ACME_STORAGE_PATH = "/etc/dokploy/traefik/dynamic/acme.json";
 const PRUNE_DEBOUNCE_MS = 15_000;
-const SWARM_STOP_TIMEOUT_MS = 30_000;
-const SWARM_STOP_POLL_MS = 500;
+const SWARM_WAIT_TIMEOUT_MS = 30_000;
+const SWARM_WAIT_POLL_MS = 500;
 
 const hostLocks = new Map<string, Promise<unknown>>();
 const pendingDebounces = new Map<
 	string,
 	{ timer: ReturnType<typeof setTimeout>; hosts: Set<string> }
 >();
+
 const shellLiteral = (value: string) => `'${value.replaceAll("'", `'"'"'`)}'`;
-export const normalizeHost = (host: string): string =>
-	host.trim().toLowerCase().replace(/\.+$/, "");
+
+export const normalizeHost = (host: string): string => {
+	const cleaned = host.trim().toLowerCase().replace(/\.+$/, "");
+	if (!cleaned || cleaned === "*") return cleaned;
+	if (cleaned.startsWith("*.")) {
+		const ascii = domainToASCII(cleaned.slice(2));
+		return ascii ? `*.${ascii}` : cleaned;
+	}
+	return domainToASCII(cleaned) || cleaned;
+};
 
 const extractDomainHosts = (
 	domains?: Array<{ main?: string; sans?: string[] }>,
@@ -127,7 +146,6 @@ export const collectActiveAcmeHosts = (
 	) {
 		throw new Error("Traefik /api/rawdata returned no router map");
 	}
-
 	const defaultResolverByEntryPoint = new Map<string, string>();
 	const byResolver = new Map<string, Set<string>>();
 	const record = (resolver: string, host: string) => {
@@ -142,26 +160,32 @@ export const collectActiveAcmeHosts = (
 		const resolver = ep?.http?.tls?.certResolver;
 		if (!resolver) continue;
 		defaultResolverByEntryPoint.set(epName, resolver);
-		for (const h of extractDomainHosts(ep?.http?.tls?.domains))
+		for (const h of extractDomainHosts(ep?.http?.tls?.domains)) {
 			record(resolver, h);
+		}
 	}
 
+	// Retain all routers in /api/rawdata (including status: "disabled" during transient backend
+	// outages) because Traefik ACME tracks merged dynamic config rather than live backend health.
 	for (const router of [
 		...Object.values(rawData.routers ?? {}),
 		...Object.values(rawData.tcpRouters ?? {}),
 	]) {
-		if (!router || router.status === "disabled") continue;
+		if (!router) continue;
+		const entryPoints = [
+			...(router.using ?? []),
+			...(router.entryPoints ?? []),
+		];
 		const resolvers = new Set<string>(
 			router.tls?.certResolver
 				? [router.tls.certResolver]
 				: router.tls
-					? (router.entryPoints ?? [])
+					? entryPoints
 							.map((ep) => defaultResolverByEntryPoint.get(ep))
 							.filter((r): r is string => Boolean(r))
 					: [],
 		);
 		if (resolvers.size === 0) continue;
-
 		const hosts = [
 			...(router.rule ? extractHostsFromRule(router.rule) : []),
 			...extractDomainHosts(router.tls?.domains),
@@ -279,8 +303,9 @@ const writeHostAcmeAtomic = async (
 	serverId?: string,
 ): Promise<void> => {
 	const { MAIN_TRAEFIK_PATH } = paths(Boolean(serverId));
-	// Stage outside dynamic/ so Traefik's watcher never sees a partial file, with 0600 mode required by ACME.
-	const stageDir = filePath.startsWith(MAIN_TRAEFIK_PATH)
+	// Stage outside dynamic/ so Traefik's watcher never observes a partial write, and create
+	// the temp file with mode 0600 before writing private keys so they are never world-readable.
+	const stageDir = filePath.startsWith(`${MAIN_TRAEFIK_PATH}/`)
 		? MAIN_TRAEFIK_PATH
 		: path.dirname(filePath);
 	const tmpPath = path.posix.join(
@@ -288,16 +313,32 @@ const writeHostAcmeAtomic = async (
 		`.acme-prune-${randomBytes(8).toString("hex")}.tmp`,
 	);
 	if (!serverId) {
-		fs.writeFileSync(tmpPath, content, { mode: 0o600, encoding: "utf8" });
-		fs.chmodSync(tmpPath, 0o600);
-		fs.renameSync(tmpPath, filePath);
+		try {
+			fs.writeFileSync(tmpPath, content, { mode: 0o600, encoding: "utf8" });
+			fs.chmodSync(tmpPath, 0o600);
+			fs.renameSync(tmpPath, filePath);
+		} catch (error) {
+			fs.rmSync(tmpPath, { force: true });
+			throw error;
+		}
 		return;
 	}
-	await writeFileRemote(serverId, tmpPath, content);
-	await execAsyncRemote(
-		serverId,
-		`chmod 600 ${shellLiteral(tmpPath)} && mv -f ${shellLiteral(tmpPath)} ${shellLiteral(filePath)}`,
-	);
+	try {
+		await execAsyncRemote(
+			serverId,
+			`install -m 600 /dev/null ${shellLiteral(tmpPath)}`,
+		);
+		await writeFileRemote(serverId, tmpPath, content);
+		await execAsyncRemote(
+			serverId,
+			`chmod 600 ${shellLiteral(tmpPath)} && mv -f ${shellLiteral(tmpPath)} ${shellLiteral(filePath)}`,
+		);
+	} catch (error) {
+		await execAsyncRemote(serverId, `rm -f ${shellLiteral(tmpPath)}`).catch(
+			() => {},
+		);
+		throw error;
+	}
 };
 
 const withHostLock = async <T>(
@@ -320,6 +361,49 @@ const withHostLock = async <T>(
 	}
 };
 
+const waitForTraefikState = async (
+	serverId: string | undefined,
+	expectRunning: boolean,
+): Promise<void> => {
+	const filter = expectRunning
+		? `--filter "${TRAEFIK_CONTAINER_NAME_FILTER}" --filter "status=running"`
+		: `--filter "${TRAEFIK_CONTAINER_NAME_FILTER}"`;
+	const deadline = Date.now() + SWARM_WAIT_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const { stdout } = await runHost(`docker ps -q ${filter}`, serverId);
+		if (Boolean(stdout.trim()) === expectRunning) return;
+		await sleep(SWARM_WAIT_POLL_MS);
+	}
+	throw new Error(
+		`Timed out waiting for dokploy-traefik container to ${expectRunning ? "start" : "stop"}`,
+	);
+};
+
+const runWithRestore = async <T>(
+	stop: () => Promise<void>,
+	fn: () => Promise<T>,
+	restore: () => Promise<void>,
+): Promise<T> => {
+	let result!: T;
+	let primaryErr: unknown;
+	let hasPrimaryErr = false;
+	try {
+		await stop();
+		result = await fn();
+	} catch (error) {
+		primaryErr = error;
+		hasPrimaryErr = true;
+	}
+	try {
+		await restore();
+	} catch (restoreErr) {
+		if (!hasPrimaryErr) throw restoreErr;
+		console.error("[Traefik ACME] Failed to restore Traefik:", restoreErr);
+	}
+	if (hasPrimaryErr) throw primaryErr;
+	return result;
+};
+
 const withTraefikStopped = async <T>(
 	serverId: string | undefined,
 	fn: () => Promise<T>,
@@ -327,38 +411,42 @@ const withTraefikStopped = async <T>(
 	const resourceType = await getDockerResourceType("dokploy-traefik", serverId);
 	if (resourceType === "service") {
 		const { stdout } = await runHost(
-			`docker service inspect dokploy-traefik --format '{{.Spec.Mode.Replicated.Replicas}}'`,
+			`docker service inspect dokploy-traefik --format '{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{else}}global{{end}}'`,
 			serverId,
 		);
-		const replicas = Math.max(1, Number.parseInt(stdout.trim(), 10) || 1);
-		await runHost("docker service scale dokploy-traefik=0", serverId);
-		try {
-			const deadline = Date.now() + SWARM_STOP_TIMEOUT_MS;
-			while (Date.now() < deadline) {
-				const ps = await runHost(
-					`docker ps -q --filter "${TRAEFIK_CONTAINER_NAME_FILTER}"`,
+		const spec = stdout.trim();
+		if (spec === "global") {
+			throw new Error(
+				"dokploy-traefik Swarm global mode is not supported for ACME pruning",
+			);
+		}
+		const replicas = Math.max(1, Number.parseInt(spec, 10) || 1);
+		return await runWithRestore(
+			async () => {
+				await runHost("docker service scale dokploy-traefik=0", serverId);
+				await waitForTraefikState(serverId, false);
+			},
+			fn,
+			async () => {
+				await runHost(
+					`docker service scale dokploy-traefik=${replicas}`,
 					serverId,
 				);
-				if (!ps.stdout.trim()) return await fn();
-				await sleep(SWARM_STOP_POLL_MS);
-			}
-			throw new Error(
-				"Timed out waiting for dokploy-traefik container to stop",
-			);
-		} finally {
-			await runHost(
-				`docker service scale dokploy-traefik=${replicas}`,
-				serverId,
-			);
-		}
+				await waitForTraefikState(serverId, true);
+				await reconnectServicesToTraefik(serverId);
+			},
+		);
 	}
 	if (resourceType === "standalone") {
-		await runHost("docker stop dokploy-traefik", serverId);
-		try {
-			return await fn();
-		} finally {
-			await runHost("docker start dokploy-traefik", serverId);
-		}
+		return await runWithRestore(
+			async () => {
+				await runHost("docker stop dokploy-traefik", serverId);
+			},
+			fn,
+			async () => {
+				await runHost("docker start dokploy-traefik", serverId);
+			},
+		);
 	}
 	throw new Error("dokploy-traefik resource type not found");
 };
@@ -477,24 +565,48 @@ export const scheduleTraefikAcmePrune = (
 
 export const pruneTraefikAcmeAllServers = async (): Promise<void> => {
 	const seenHosts = new Set<string>();
-	const runTarget = async (label: string, serverId?: string) => {
+	const runTarget = async (
+		label: string,
+		serverId?: string,
+	): Promise<boolean> => {
 		try {
 			await pruneTraefikAcme({ serverId });
+			return true;
 		} catch (error) {
 			console.error(
 				`[Traefik ACME] Scheduled prune failed for ${label}:`,
 				error,
 			);
+			return false;
 		}
 	};
-	await runTarget("control plane");
+	if (!IS_CLOUD) await runTarget("control plane");
 	for (const server of await getAllServers()) {
+		if (
+			server.serverStatus !== "active" ||
+			server.serverType !== "deploy" ||
+			!server.sshKeyId
+		) {
+			continue;
+		}
 		const hostKey = server.ipAddress || server.serverId;
 		if (seenHosts.has(hostKey)) continue;
-		seenHosts.add(hostKey);
-		await runTarget(
-			`server ${server.name} (${server.serverId})`,
-			server.serverId,
-		);
+		if (
+			await runTarget(
+				`server ${server.name} (${server.serverId})`,
+				server.serverId,
+			)
+		) {
+			seenHosts.add(hostKey);
+		}
 	}
+};
+
+export const initTraefikAcmePruneCron = (): void => {
+	if (scheduledJobs["traefik-acme-prune"]) return;
+	scheduleJob("traefik-acme-prune", "15 4 * * *", () => {
+		void pruneTraefikAcmeAllServers().catch((error) => {
+			console.error("[Traefik ACME] Scheduled prune failed:", error);
+		});
+	});
 };

@@ -11,7 +11,6 @@ import { startLogCleanup } from "../access-log/handler";
 import { cleanupAll } from "../docker/utils";
 import { sendDockerCleanupNotifications } from "../notifications/docker-cleanup";
 import { execAsync, execAsyncRemote } from "../process/execAsync";
-import { pruneTraefikAcmeAllServers } from "../traefik/acme";
 import { redactRcloneCredentials } from "./redact";
 import { getS3Credentials, normalizeS3Path, scheduleBackup } from "./utils";
 
@@ -107,14 +106,6 @@ export const initCronJobs = async () => {
 		} catch (error) {
 			console.error("[Backup] Log Cleanup Error", error);
 		}
-	}
-
-	try {
-		scheduleJob("traefik-acme-prune", "15 4 * * *", async () => {
-			await pruneTraefikAcmeAllServers();
-		});
-	} catch (error) {
-		console.error("[Traefik ACME] Schedule Init Error", error);
 	}
 };
 
