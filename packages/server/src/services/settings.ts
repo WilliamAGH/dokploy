@@ -526,7 +526,7 @@ export const reconnectServicesToTraefik = async (serverId?: string) => {
 	let commands = "";
 
 	for (const compose of composeResult) {
-		commands += `docker network connect ${compose.appName} $(docker ps --filter "${TRAEFIK_CONTAINER_NAME_FILTER}" -q) >/dev/null 2>&1 || true\n`;
+		commands += `docker network connect ${compose.appName} $(docker ps --filter "${TRAEFIK_CONTAINER_NAME_FILTER}" -q) >/dev/null 2>&1\n`;
 	}
 
 	if (serverId) {
